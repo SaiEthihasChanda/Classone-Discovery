@@ -304,6 +304,7 @@ class FoundFacultyPage(BaseModel):
     profiles: int = 0
     sample: list[str] = Field(default_factory=list)
     hop: int = 1
+    label: Optional[str] = None
 
 
 class FindFacultyPagesResult(BaseModel):

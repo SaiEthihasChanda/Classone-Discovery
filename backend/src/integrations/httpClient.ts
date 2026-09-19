@@ -5,6 +5,19 @@
  * User-Agent identification are consistent rather than reinvented per client.
  */
 
+import { Agent, setGlobalDispatcher } from 'undici';
+
+/**
+ * Node's built-in fetch gives up if response HEADERS take more than 300 s to
+ * arrive. The scraper's faculty-page discovery legitimately takes longer than
+ * that for one institute (dozens of rate-limited, robots-checked fetches), and
+ * the request would die with a bare "fetch failed". A longer header timeout
+ * here applies process-wide; every call still carries its own AbortSignal or
+ * `timeoutMs`, so nothing waits forever.
+ */
+setGlobalDispatcher(new Agent({ headersTimeout: 40 * 60_000, bodyTimeout: 40 * 60_000 }));
+
+
 export class HttpError extends Error {
   constructor(
     public readonly status: number,

@@ -297,10 +297,10 @@ def _extract_profile_url(block: Tag, base_url: str) -> str | None:
         # publisher or social pages, not profiles.
         if urlparse(absolute).netloc != base_host:
             continue
-        if any(
-            segment in absolute.lower()
-            for segment in ("/people/", "/faculty/", "/profile", "/staff/", "/directory/", "/~")
-        ):
+        # Matched as path prefixes, not whole segments: IIT Bombay's chemistry
+        # department links profiles as "/facultyuserview/<name>", others use
+        # "/people/<name>", "/member/<id>", "/person/<id>", "/~login".
+        if re.search(r"/(people|faculty|profile|staff|directory|member|person|user|~)", absolute.lower()):
             return absolute
 
     return None

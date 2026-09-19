@@ -257,7 +257,7 @@ def main() -> int:
     chem = pages.get(f"{BASE}/dept/chemistry/faculty")
     check("found the chemistry faculty page two hops down", chem is not None, str(list(pages)))
     check("chemistry page attributed to the chemistry department", bool(chem) and chem.get("department") == "chemistry", str(chem))
-    check("chemistry page reached on hop 2 with 4 people", bool(chem) and chem.get("hop") == 2 and chem.get("people") == 4, str(chem))
+    check("chemistry page reached with 4 people and the Faculty label", bool(chem) and chem.get("people") == 4 and chem.get("label") == "Faculty", str(chem))
     mems = pages.get(f"{BASE}/dept/mems/people")
     check("found the MEMS people page via the 'metallurg' hint", mems is not None and mems.get("department") in ("metallurg", "material"), str(mems))
     check("physics faculty page NOT followed (no hint)", f"{BASE}/dept/physics/faculty" not in pages, str(list(pages)))

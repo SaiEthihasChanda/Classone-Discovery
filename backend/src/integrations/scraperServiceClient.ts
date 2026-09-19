@@ -290,6 +290,8 @@ export interface FoundFacultyPage {
   profiles: number;
   sample: string[];
   hop: number;
+  /** Link text that led to the page ("Faculty"). */
+  label?: string | null;
 }
 
 export interface FindFacultyPagesResponse {
@@ -298,7 +300,7 @@ export interface FindFacultyPagesResponse {
 }
 
 /** Long: up to `maxProbes` rate-limited fetches per institute, all institutes in parallel. */
-const FIND_PAGES_TIMEOUT_MS = 900_000;
+const FIND_PAGES_TIMEOUT_MS = 1_800_000;
 
 /**
  * Asks the scraper to locate the department faculty listings of each

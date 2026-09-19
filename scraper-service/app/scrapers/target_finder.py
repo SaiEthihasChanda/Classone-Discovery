@@ -210,6 +210,68 @@ def _links_with_text(html: str, base_url: str) -> list[tuple[str, str]]:
     return out
 
 
+# Where Indian institutes conventionally put a department: a subdomain or a
+# path with a short code. Homepages are increasingly JavaScript menus that
+# expose no department links to a static fetch (IIT Bombay's exposes none even
+# when rendered), so these are probed directly. Each maps to the department
+# hint it stands for; a 404 costs one cheap request.
+DEPARTMENT_CODES: list[tuple[str, str]] = [
+    ("chem", "chemistry"),
+    ("chemistry", "chemistry"),
+    ("che", "chemical"),
+    ("chemical", "chemical"),
+    ("cheme", "chemical"),
+    ("bsbe", "bioscience"),
+    ("bio", "biolog"),
+    ("biotech", "biotech"),
+    ("bt", "biotech"),
+    ("dbeb", "biochem"),
+    ("bioscience", "bioscience"),
+    ("biosciences", "bioscience"),
+    ("biology", "biolog"),
+    ("mems", "metallurg"),
+    ("mme", "metallurg"),
+    ("mm", "metallurg"),
+    ("meta", "metallurg"),
+    ("metallurgy", "metallurg"),
+    ("mat", "material"),
+    ("materials", "material"),
+    ("mse", "material"),
+    ("ese", "energy"),
+    ("energy", "energy"),
+    ("dese", "energy"),
+    ("civil", "civil"),
+    ("ce", "civil"),
+    ("me", "mechanical"),
+    ("mech", "mechanical"),
+    ("mechanical", "mechanical"),
+]
+
+# Link text/URL fragments that lead to a list of departments.
+DEPARTMENT_INDEX_HINTS = ("department", "academic-unit", "academics/dept", "schools", "centres", "centers")
+
+
+def _seed_candidates(root_url: str, dept_hints: list[str]) -> list[tuple[str, str, str]]:
+    """Conventional department URLs for an institute: (url, text, hint)."""
+    parsed = urlparse(root_url)
+    host = parsed.netloc
+    bare = host[4:] if host.startswith("www.") else host
+    wanted = {h.lower() for h in dept_hints}
+    out: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for code, hint in DEPARTMENT_CODES:
+        if hint not in wanted:
+            continue
+        # IIT Bombay's departments answer only on the www. form (the bare host
+        # does not resolve); others only on the bare form. Both are tried.
+        for url in (f"{parsed.scheme}://www.{code}.{bare}", f"{parsed.scheme}://{code}.{bare}", f"{root_url.rstrip('/')}/{code}"):
+            if url in seen:
+                continue
+            seen.add(url)
+            out.append((url, f"{code} department", hint))
+    return out
+
+
 def _department_guess(url: str, text: str, dept_hints: list[str]) -> str | None:
     hay = f"{url} {text}".lower()
     for hint in dept_hints:
@@ -237,12 +299,17 @@ async def find_department_faculty_pages(
     the per-domain delay, and a hard cap on fetches per institute.
     """
     results: list[dict] = []
+    # The homepage is one source of links, not a prerequisite: the conventional
+    # department hosts are probed regardless, so a slow or blocked homepage
+    # only loses the links it would have contributed.
+    homepage = ""
     try:
         homepage = await fetch_page(root_url, timeout_sec)
     except FetchError as exc:
-        return [{"url": root_url, "error": exc.reason.value, "detail": exc.detail}]
-    except Exception as exc:  # noqa: BLE001
-        return [{"url": root_url, "error": "unknown", "detail": f"{type(exc).__name__}: {exc}"}]
+        if exc.reason.value == "robots_disallowed":
+            return [{"url": root_url, "error": exc.reason.value, "detail": exc.detail}]
+    except Exception:  # noqa: BLE001
+        pass
 
     def rank(url: str, text: str, hop: int) -> int:
         score = _score_candidate(url, text)
@@ -255,25 +322,73 @@ async def find_department_faculty_pages(
         return score
 
     queue: list[tuple[int, str, str, int, str | None]] = []  # (-score, url, text, hop, dept)
-    for url, text in _links_with_text(homepage, root_url):
-        dept = _department_guess(url, text, dept_hints)
-        score = rank(url, text, 1)
+    queued_urls: set[str] = set()
+
+    def enqueue(url: str, text: str, hop: int, dept: str | None, bonus: int = 0) -> None:
+        if url in queued_urls:
+            return
+        score = rank(url, text, hop) + bonus
         if score > 0 or dept:
-            queue.append((-score, url, text, 1, dept))
+            queued_urls.add(url)
+            queue.append((-score, url, text, hop, dept))
+
+    home_links = _links_with_text(homepage, root_url) if homepage else []
+    for url, text in home_links:
+        enqueue(url, text, 1, _department_guess(url, text, dept_hints))
+
+    # A "Departments" index page, when the homepage has one, lists every
+    # department in plain HTML even when the menu itself is script-driven.
+    index_pages = [
+        (url, text) for url, text in home_links if any(h in f"{url} {text}".lower() for h in DEPARTMENT_INDEX_HINTS)
+    ][:3]
+    for url, text in index_pages:
+        try:
+            index_html = await fetch_page(url, timeout_sec)
+        except Exception:  # noqa: BLE001
+            continue
+        for sub_url, sub_text in _links_with_text(index_html, url):
+            dept = _department_guess(sub_url, sub_text, dept_hints)
+            if dept:
+                enqueue(sub_url, sub_text, 1, dept)
+
+    # Conventional department hosts and paths, whether or not anything links
+    # to them. Ranked below real links so a linked page is tried first, and
+    # fetched with a short timeout: a guessed host that hangs is not worth
+    # the full wait a linked page gets.
+    seed_urls: set[str] = set()
+    for url, text, hint in _seed_candidates(root_url, dept_hints):
+        seed_urls.add(url)
+        enqueue(url, text, 1, hint, bonus=-5)
     queue.sort()
+    seed_timeout = min(timeout_sec, 10)
 
     probed: set[str] = set([root_url.rstrip("/")])
     fetched = 0
+    attempts = 0
     found_urls: set[str] = set()
 
-    while queue and fetched < max_probes:
+    # Failed fetches (a 404 on a guessed host) do not use up the probe budget,
+    # but they take time, so the total number of attempts is capped too.
+    while queue and fetched < max_probes and attempts < max_probes * 4:
         _neg, url, text, hop, dept = queue.pop(0)
         if url in probed:
             continue
         probed.add(url)
+        attempts += 1
 
         try:
-            html = await fetch_page(url, timeout_sec)
+            html = await fetch_page(url, seed_timeout if url in seed_urls else timeout_sec)
+        except FetchError as exc:
+            # A linked page (not a guessed host) that timed out gets one more
+            # try: institute servers are slow in bursts, and a listing missed
+            # today is a department missing from the roster.
+            if url in seed_urls or exc.reason.value != "timeout":
+                continue
+            try:
+                await asyncio.sleep(2)
+                html = await fetch_page(url, timeout_sec)
+            except Exception:  # noqa: BLE001
+                continue
         except Exception:  # noqa: BLE001 - one bad page must not stop the crawl
             continue
         fetched += 1
@@ -294,6 +409,9 @@ async def find_department_faculty_pages(
                     "profiles": sum(1 for p in people if p.profile_url),
                     "sample": [p.name for p in people[:3]],
                     "hop": hop,
+                    # The link text that led here ("Faculty") — the URL alone
+                    # ("/people") does not always say what the page lists.
+                    "label": text[:80],
                 }
             )
             continue
@@ -305,10 +423,9 @@ async def find_department_faculty_pages(
             for sub_url, sub_text in _links_with_text(html, url):
                 if sub_url in probed:
                     continue
-                score = rank(sub_url, sub_text, 2)
                 hay = f"{sub_url} {sub_text}".lower()
-                if score > 0 and any(h in hay for h in DIRECTORY_HINTS):
-                    queue.append((-score, sub_url, sub_text, 2, this_dept))
+                if any(h in hay for h in DIRECTORY_HINTS):
+                    enqueue(sub_url, sub_text, 2, this_dept)
             queue.sort()
 
     return sorted(results, key=lambda r: -r.get("people", 0))

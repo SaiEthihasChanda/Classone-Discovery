@@ -15,6 +15,8 @@ export interface RoleDecision {
   category: FacultyRoleCategory;
   /** The pattern that decided it, for the exclusion reason and the audit trail. */
   matched?: string;
+  /** Where the title came from; a faculty page is authoritative about today. */
+  source?: 'faculty_page' | 'orcid' | 'import' | 'inferred';
 }
 
 /** Student, postdoc and project-staff titles. Checked before anything else. */
@@ -27,7 +29,9 @@ const STUDENT_PATTERNS: RegExp[] = [
   /\bresearch associate\b/i,
   /\bresearch assistant\b/i,
   /\bteaching assistant\b/i,
-  /\bproject\s+(fellow|associate|assistant|staff|scientist|engineer|intern)\b/i,
+  // "Project Research Scientist", "Project Technical Assistant": fixed-term
+  // project staff, whatever sits between the two words.
+  /\bproject\s+(\w+\s+){0,2}(fellow|associate|assistant|staff|scientist|engineer|intern|manager|officer)\b/i,
   /\b(junior|senior)\s+research\s+fellow\b/i,
   /\b[js]rf\b/i,
   /\bintern(ship)?\b/i,
@@ -158,14 +162,29 @@ export function inferSeniority(stats: {
   hIndex?: number;
   firstPublicationYear?: number;
   lastPublicationYear?: number;
+  /** Distinct years the author published from the institute in question. */
+  yearsAtInstitute?: number[];
+  name?: string;
 }, now: Date = new Date()): { senior: boolean; basis: string } {
   const year = now.getFullYear();
   const works = stats.worksCount ?? 0;
   const h = stats.hIndex ?? 0;
   const span = stats.firstPublicationYear ? year - stats.firstPublicationYear : 0;
   const active = (stats.lastPublicationYear ?? 0) >= year - 2;
-  const basis = `${works} works, h-index ${h}, publishing since ${stats.firstPublicationYear ?? '?'}${active ? '' : ', not recently active'}`;
-  return { senior: works >= 15 && h >= 8 && span >= 8 && active, basis };
+  // Established AT THIS INSTITUTE: several publishing years here, one of
+  // them recent. A merged OpenAlex profile (two people sharing a name)
+  // looks senior overall but rarely shows a steady run of years at one place.
+  const here = [...new Set(stats.yearsAtInstitute ?? [])];
+  const hereSpan = here.length;
+  const hereRecent = here.some((y) => y >= year - 2);
+  // Initial-only names ("A. Sharma") are the profiles most often conflated.
+  const firstToken = (stats.name ?? '').trim().split(/\s+/)[0]?.replace(/\./g, '') ?? '';
+  const spelledOut = firstToken.length >= 3;
+  const basis =
+    `${works} works, h-index ${h}, publishing since ${stats.firstPublicationYear ?? '?'}` +
+    `${active ? '' : ', not recently active'}; ${hereSpan} year${hereSpan === 1 ? '' : 's'} publishing from the institute` +
+    `${hereRecent ? '' : ', none recent'}${spelledOut ? '' : '; initial-only name'}`;
+  return { senior: works >= 15 && h >= 8 && span >= 8 && active && hereSpan >= 4 && hereRecent && spelledOut, basis };
 }
 
 /**
@@ -175,6 +194,14 @@ export function inferSeniority(stats: {
  * describing them precisely.
  */
 export function strongerRole(a: RoleDecision, b: RoleDecision): RoleDecision {
+  // The institute's own page describes the person today; an ORCID employment
+  // entry can be years stale ("PhD student", never closed). So a faculty
+  // title from a page beats an exclusion from ORCID, while an exclusion from
+  // the page itself ("Research Scholars" section) beats everything.
+  const isPage = (r: RoleDecision) => r.source === 'faculty_page';
+  const isFacultyTitle = (r: RoleDecision) => ['professor', 'scientist', 'officer', 'fellow'].includes(r.category);
+  if (isPage(a) && isFacultyTitle(a) && b.category === 'excluded' && !isPage(b)) return a;
+  if (isPage(b) && isFacultyTitle(b) && a.category === 'excluded' && !isPage(a)) return b;
   const rank = (c: FacultyRoleCategory): number =>
     ({ excluded: 6, professor: 5, scientist: 4, officer: 3, fellow: 3, inferred: 1, unknown: 0 })[c];
   return rank(b.category) > rank(a.category) ? b : a;

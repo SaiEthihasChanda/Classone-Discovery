@@ -38,7 +38,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
   });
 
   await check('classifyRole drops students, postdocs, project staff and adjunct/visiting appointments', () => {
-    for (const t of ['PhD Student', 'Ph.D. Scholar', 'Research Scholar', 'Postdoctoral Fellow', 'Post-doctoral Research Scientist', 'Senior Research Fellow', 'JRF', 'Project Assistant', 'Research Associate', 'M.Tech student', 'National Post-Doctoral Fellow']) {
+    for (const t of ['PhD Student', 'Ph.D. Scholar', 'Research Scholar', 'Postdoctoral Fellow', 'Post-doctoral Research Scientist', 'Senior Research Fellow', 'JRF', 'Project Assistant', 'Project Research Scientist', 'Research Associate', 'M.Tech student', 'National Post-Doctoral Fellow']) {
       assert.equal(classifyRole(t).category, 'excluded', `"${t}" should be excluded`);
     }
     for (const t of ['Adjunct Professor', 'Visiting Professor', 'Guest Faculty', 'Honorary Professor']) {
@@ -52,13 +52,20 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(strongerRole({ category: 'inferred' }, { category: 'excluded' }).category, 'excluded');
     assert.equal(strongerRole({ category: 'inferred' }, { category: 'professor' }).category, 'professor');
     assert.equal(strongerRole({ category: 'professor' }, { category: 'unknown' }).category, 'professor');
+    assert.equal(strongerRole({ category: 'professor', source: 'faculty_page' }, { category: 'excluded', source: 'orcid' }).category, 'professor', 'a faculty-page title beats a stale ORCID exclusion');
+    assert.equal(strongerRole({ category: 'professor', source: 'orcid' }, { category: 'excluded', source: 'faculty_page' }).category, 'excluded', 'an exclusion from the page itself wins');
+    assert.equal(decideDomain({ department: 'BSBE' }).domain, 'biology');
+    assert.equal(decideDomain({ department: 'MEMS' }).domain, 'materials');
   });
 
   await check('inferSeniority needs output, an h-index, an 8-year span and recent activity', () => {
     const now = new Date('2026-09-19');
-    assert.equal(inferSeniority({ worksCount: 60, hIndex: 20, firstPublicationYear: 2010, lastPublicationYear: 2026 }, now).senior, true);
-    assert.equal(inferSeniority({ worksCount: 20, hIndex: 9, firstPublicationYear: 2021, lastPublicationYear: 2026 }, now).senior, false, 'a productive PhD student is not senior');
-    assert.equal(inferSeniority({ worksCount: 60, hIndex: 20, firstPublicationYear: 2005, lastPublicationYear: 2019 }, now).senior, false, 'not recently active');
+    const here = { yearsAtInstitute: [2019, 2021, 2023, 2025, 2026], name: 'Kavita Rao' };
+    assert.equal(inferSeniority({ worksCount: 60, hIndex: 20, firstPublicationYear: 2010, lastPublicationYear: 2026, ...here }, now).senior, true);
+    assert.equal(inferSeniority({ worksCount: 20, hIndex: 9, firstPublicationYear: 2021, lastPublicationYear: 2026, ...here }, now).senior, false, 'a productive PhD student is not senior');
+    assert.equal(inferSeniority({ worksCount: 60, hIndex: 20, firstPublicationYear: 2005, lastPublicationYear: 2019, ...here }, now).senior, false, 'not recently active');
+    assert.equal(inferSeniority({ worksCount: 60, hIndex: 20, firstPublicationYear: 2010, lastPublicationYear: 2026, yearsAtInstitute: [2025, 2026], name: 'Kavita Rao' }, now).senior, false, 'only two years at the institute');
+    assert.equal(inferSeniority({ worksCount: 60, hIndex: 20, firstPublicationYear: 2010, lastPublicationYear: 2026, yearsAtInstitute: here.yearsAtInstitute, name: 'A. Sharma' }, now).senior, false, 'initial-only names are not inferred');
   });
 
   await check('decideDomain keeps the named departments and reads topics when no department is known', () => {
@@ -74,6 +81,11 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(byTopics.domain, 'chemistry');
     assert.equal(byTopics.kept, true);
     assert.equal(domainFromTopics([{ field: 'Physics and Astronomy', count: 40 }]), 'other');
+    assert.equal(domainFromTopics([{ field: 'Physics and Astronomy', subfield: 'Nuclear and High Energy Physics', name: 'High-Energy Particle Collisions Research', count: 40 }]), 'other', 'high-energy physics is not energy engineering');
+    assert.equal(domainFromTopics([{ field: 'Physics and Astronomy', count: 40 }, { field: 'Materials Science', count: 6 }]), 'other', 'one materials topic does not make a physicist a materials scientist');
+    assert.equal(decideDomain({ department: 'Department of Physics', topics: [{ field: 'Chemistry', subfield: 'Electrochemistry', count: 30 }] }).kept, true, 'a physicist with electrochemistry topics passes the gate');
+    assert.equal(decideDomain({ department: 'Department of Physics', topics: [{ field: 'Chemistry', subfield: 'Electrochemistry', count: 30 }] }).gate, 'electrochemistry');
+    assert.equal(decideDomain({ department: 'Electrical Engineering', topics: [{ field: 'Materials Science', count: 30 }] }).kept, false, 'a stated out-of-list department is not overridden by topics');
   });
 
   await check('civil and mechanical engineering pass only with corrosion-related work', () => {
@@ -122,8 +134,8 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
   const authors = [
     { id: 'A5000000001', name: 'Siddharth Tallur', orcid: '0000-0002-0001-0001', worksCount: 80, hIndex: 22, yearsHere: [2026, 2025], firstPublicationYear: 2009, lastPublicationYear: 2026, topics: [{ name: 'Electrochemical Sensors', count: 30, subfield: 'Electrochemistry', field: 'Chemistry' }], lastKnown: [{ id: IITB_ID, name: 'IIT Bombay' }] },
     { id: 'A5000000002', name: 'Rahul Verma', worksCount: 6, hIndex: 3, yearsHere: [2026], firstPublicationYear: 2022, lastPublicationYear: 2026, topics: [{ name: 'Organic Synthesis', count: 6, subfield: 'Organic Chemistry', field: 'Chemistry' }], lastKnown: [{ id: IITB_ID, name: 'IIT Bombay' }] },
-    { id: 'A5000000003', name: 'Priya Nair', worksCount: 90, hIndex: 25, yearsHere: [2026], firstPublicationYear: 2005, lastPublicationYear: 2026, topics: [{ name: 'Quantum Optics', count: 60, subfield: 'Atomic and Molecular Physics', field: 'Physics and Astronomy' }], lastKnown: [{ id: IITB_ID, name: 'IIT Bombay' }] },
-    { id: 'A5000000004', name: 'Kavita Rao', worksCount: 45, hIndex: 15, yearsHere: [2026], firstPublicationYear: 2012, lastPublicationYear: 2026, topics: [{ name: 'Lithium Batteries', count: 20, subfield: 'Energy Engineering', field: 'Energy' }], lastKnown: [{ id: IITB_ID, name: 'IIT Bombay' }] },
+    { id: 'A5000000003', name: 'Priya Nair', worksCount: 90, hIndex: 25, yearsHere: [2026, 2024, 2022, 2020], firstPublicationYear: 2005, lastPublicationYear: 2026, topics: [{ name: 'Quantum Optics', count: 60, subfield: 'Atomic and Molecular Physics', field: 'Physics and Astronomy' }], lastKnown: [{ id: IITB_ID, name: 'IIT Bombay' }] },
+    { id: 'A5000000004', name: 'Kavita Rao', worksCount: 45, hIndex: 15, yearsHere: [2026, 2025, 2023, 2021, 2019], firstPublicationYear: 2012, lastPublicationYear: 2026, topics: [{ name: 'Lithium Batteries', count: 20, subfield: 'Energy Engineering', field: 'Energy' }], lastKnown: [{ id: IITB_ID, name: 'IIT Bombay' }] },
   ];
   const orcidHits = [
     { orcid: '0000-0002-0001-0001', name: 'Siddharth Tallur', institutionNames: ['Indian Institute of Technology Bombay'], emails: [] },
@@ -195,7 +207,8 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(tallur.person.openAlexAuthorId, 'A5000000001');
     assert.deepEqual(tallur.sources.map((s) => s.type).sort(), ['openalex', 'orcid']);
     assert.equal(tallur.role.category, 'professor');
-    assert.equal(tallur.department.domain, 'chemistry', 'EE department name is not kept, so topics decide: electrochemistry');
+    assert.equal(tallur.department.domain, 'other', 'a stated EE department is outside the list…');
+    assert.ok(tallur.tags.includes('electrochem-gate'), '…but his electrochemical topics pass the gate');
     assert.equal(tallur.institution.affiliation?.status, 'current', 'a current ORCID employment settles it at build time');
     assert.equal(tallur.institution.affiliation?.source, 'orcid');
     assert.equal(tallur.institution.discoveredOpenAlexId, IITB_ID);
@@ -231,6 +244,16 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.ok(guy.department.gateTerms?.includes('corrosion'), `gate terms: ${guy.department.gateTerms}`);
     const other = await repositories.faculty.findSamePerson({ orcid: '0000-0002-0001-0006', normalizedNameKey: '' });
     assert.equal(other, null);
+  });
+
+  await check('a department-less duplicate profile does not exclude a member whose department is known', async () => {
+    // OpenAlex sometimes holds two records for one person; the second has no
+    // department and physics-looking topics.
+    const twin = { ...authors[0]!, id: 'A5000000099', orcid: undefined, yearsHere: [2026, 2025, 2023, 2021, 2019], topics: [{ name: 'Quantum Optics', count: 20, subfield: 'Atomic and Molecular Physics', field: 'Physics and Astronomy' }] };
+    const twinDeps = { ...deps, listAuthors: async () => ({ authors: [...authors, twin], total: authors.length + 1 }) };
+    await buildRoster({ institutionIds: [IITB_ID] }, noopCtx(), twinDeps as any);
+    const tallur = await repositories.faculty.findSamePerson({ orcid: '0000-0002-0001-0001', normalizedNameKey: '' });
+    assert.equal(tallur!.status, 'eligible', 'the thinner twin must not downgrade him');
   });
 
   await check('a second build is idempotent: nothing created, everything updated', async () => {

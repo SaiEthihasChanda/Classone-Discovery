@@ -129,7 +129,8 @@ async function fetchOpenAlex<T>(url: string, estimatedCredits?: number): Promise
       'User-Agent': 'ClassOneSalesBot/1.0 (academic lead research)',
       Accept: 'application/json',
     },
-    signal: AbortSignal.timeout(20_000),
+    // A 200-author page with topics and affiliations is ~2 MB; give it room.
+    signal: AbortSignal.timeout(45_000),
   });
 
   recordBudgetHeaders(response.headers);
@@ -841,7 +842,18 @@ export async function listInstitutionAuthors(params: {
     );
     if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
 
-    const page: Response = await fetchOpenAlex<Response>(url.toString());
+    // One dropped connection must not lose a whole institute: a transient
+    // failure is retried; only the allowance running out is final.
+    let page: Response | null = null;
+    for (let attempt = 1; attempt <= 3 && !page; attempt += 1) {
+      try {
+        page = await fetchOpenAlex<Response>(url.toString());
+      } catch (error) {
+        if (error instanceof OpenAlexBudgetError || attempt === 3) throw error;
+        await new Promise((r) => setTimeout(r, attempt * 3000));
+      }
+    }
+    if (!page) break;
     total = page.meta?.count ?? total;
     for (const a of page.results ?? []) {
       if (!a.id || !a.display_name) continue;
