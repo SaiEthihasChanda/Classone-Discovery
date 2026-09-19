@@ -893,7 +893,9 @@ async function main(): Promise<void> {
     assert.equal(a.status, 'current');
     assert.equal(a.affiliation.source, 'directory');
     assert.equal(a.institution.name, IITB.name);
-    assert.deepEqual(a.affiliation.evidence?.map((e) => e.source), ['directory']);
+    // Every source consulted is on the record, the deciding one first.
+    assert.deepEqual(a.affiliation.evidence?.map((e) => e.source), ['directory', 'orcid', 'openalex']);
+    assert.equal(a.affiliation.evidence?.[1]?.institution, NUS.name, 'ORCID disagreement must be visible');
   });
 
   await check('IRINS/Vidwan profile naming another institute → moved there, even if OpenAlex still says here', async () => {
@@ -986,7 +988,8 @@ async function main(): Promise<void> {
     assert.equal(lead.institution.name, NUS.name);
     assert.equal(lead.institution.affiliation?.source, 'vidwan');
     const asked = registryAsked as { registries: Array<{ key: string }>; knownInstitutions: string[] };
-    assert.deepEqual(asked.registries.map((r) => r.key).sort(), ['irins', 'vidwan']);
+    // Both registries are off by default (robots.txt / bot challenge, verified live), so none are passed.
+    assert.deepEqual(asked.registries, []);
     assert.ok(asked.knownInstitutions.length >= 70, 'known institute names should be passed for label-less profiles');
     assert.ok(lead.institution.affiliation?.evidence?.some((e) => e.source === 'vidwan' && e.url === 'https://vidwan/p/9'));
   });

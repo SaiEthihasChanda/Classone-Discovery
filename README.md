@@ -306,9 +306,16 @@ with a positive answer decides; every source consulted is kept on the lead as ev
 | OpenAlex author record | affiliation on the latest paper | every check (free API) |
 
 *Verify now* on a lead uses the two free APIs; *Deep check* (and the bulk action's second
-prompt) adds the directory and registries via the scraper. Registry search URLs are editable
-under *Settings → Search keywords → Researcher registries*; a site that changes its search page
-degrades to "nothing found", never to wrong data.
+prompt) adds the directory and registries via the scraper.
+
+**Registries, verified live on 19 Sep 2026:** both are OFF by default because neither admits
+an identified crawler — Vidwan's robots.txt disallows everything except Googlebot, and every
+IRINS host (irins.org and the institute instances) answers with a Cloudflare bot challenge
+(HTTP 403). This service honours robots.txt and never evades a challenge, so enabling them
+finds nothing. They remain configurable under *Settings → Search keywords → Researcher
+registries* should either open up or publish an API. In practice the check today rests on the
+institute directory (where one parses), ORCID and OpenAlex — ORCID being the one that most often
+carries a current, self-entered employment.
 
 ### Per-lead web enrichment (scraper service)
 

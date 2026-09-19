@@ -56,7 +56,8 @@ const settingsPatchSchema = z.object({
               .trim()
               .url()
               .refine((u) => u.includes('{name}'), 'Search URL must contain {name}'),
-            enabled: z.boolean().default(true),
+            enabled: z.boolean().default(false),
+            note: z.string().trim().max(200).optional(),
           }),
         )
         .max(10)

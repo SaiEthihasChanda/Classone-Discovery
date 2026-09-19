@@ -340,7 +340,7 @@ export interface AppSettings {
     instrumentLookbackYears: number;
     verifyAffiliations: boolean;
     useOrcidForAffiliation: boolean;
-    affiliationRegistries: Array<{ key: string; label: string; searchUrl: string; enabled: boolean }>;
+    affiliationRegistries: Array<{ key: string; label: string; searchUrl: string; enabled: boolean; note?: string }>;
     instrumentBrands: InstrumentBrandConfig[];
     /** Derived keyword groups switched off; see `DiscoveryConfig.keywordSearch`. */
     disabledKeywordGroups: string[];

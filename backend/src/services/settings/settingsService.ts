@@ -36,26 +36,35 @@ export interface AffiliationRegistryConfig {
   label: string;
   searchUrl: string;
   enabled: boolean;
+  /** Why a registry is off by default — shown in Settings so nobody re-enables it blindly. */
+  note?: string;
 }
 
 /**
- * Default registries. URL templates are the sites' public search pages as
- * understood at time of writing and are meant to be confirmed against the
- * live site once (Settings shows them); the parser tolerates a mismatch by
- * finding nothing rather than something wrong.
+ * Registries known to hold current affiliations for Indian researchers.
+ *
+ * Both are OFF by default, verified 19 Sep 2026: Vidwan's robots.txt disallows
+ * every crawler except Googlebot, and every IRINS host (irins.org and the
+ * institute instances) answers our identified crawler with a Cloudflare bot
+ * challenge (HTTP 403). This service honours robots.txt and never evades a
+ * challenge, so enabling them today finds nothing. They stay configurable in
+ * case either site opens up or publishes an API; the parser degrades to
+ * "nothing found" rather than to wrong data.
  */
 export const DEFAULT_AFFILIATION_REGISTRIES: AffiliationRegistryConfig[] = [
   {
     key: 'irins',
     label: 'IRINS (institute research information systems)',
     searchUrl: 'https://irins.org/irins/searchc/search?q={name}',
-    enabled: true,
+    enabled: false,
+    note: 'Cloudflare bot challenge (HTTP 403) for identified crawlers — checked 19 Sep 2026',
   },
   {
     key: 'vidwan',
     label: 'Vidwan (national expert database)',
     searchUrl: 'https://vidwan.inflibnet.ac.in/searchc/search?q={name}',
-    enabled: true,
+    enabled: false,
+    note: 'robots.txt disallows all crawlers except Googlebot — checked 19 Sep 2026',
   },
 ];
 
@@ -191,7 +200,8 @@ function toPlain(doc: Record<string, any>): AppSettings {
               key: String(r.key),
               label: String(r.label ?? r.key),
               searchUrl: String(r.searchUrl),
-              enabled: r.enabled ?? true,
+              enabled: r.enabled ?? false,
+              note: r.note ? String(r.note) : DEFAULT_AFFILIATION_REGISTRIES.find((d) => d.key === r.key)?.note,
             }))
           : DEFAULT_AFFILIATION_REGISTRIES.map((r) => ({ ...r })),
       // A settings document written before brands existed gets the seed list,

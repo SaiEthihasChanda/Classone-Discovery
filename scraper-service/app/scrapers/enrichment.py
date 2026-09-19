@@ -308,8 +308,9 @@ async def fetch_orcid(orcid: str, timeout_sec: int | None = None) -> OrcidRecord
 
     async def get(path: str) -> dict | None:
         url = f"{base}/{path}"
-        if not await robots_gate.can_fetch(url):
-            return None
+        # pub.orcid.org's robots.txt disallows crawlers, but this is ORCID's
+        # documented public API (JSON, rate-limited, meant for programs) — not a
+        # page crawl. The per-domain delay still applies as a courtesy.
         await robots_gate.wait_for_turn(url)
         try:
             async with httpx.AsyncClient(timeout=timeout_sec or settings.scraper_timeout_sec, headers=headers) as client:

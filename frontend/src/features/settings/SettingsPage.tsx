@@ -642,6 +642,11 @@ function InstrumentBrandsCard({
             />
             {reg.label}
           </label>
+          {reg.note && (
+            <span className="muted small" style={{ flex: '1 1 100%', order: 3, margin: '-4px 0 4px 24px' }}>
+              Off by default: {reg.note}
+            </span>
+          )}
           <input
             value={reg.searchUrl}
             onChange={(e) =>

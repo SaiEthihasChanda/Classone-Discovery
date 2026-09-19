@@ -259,6 +259,32 @@ export function combineAffiliationEvidence(
     });
   }
 
+  // Every source consulted goes on the record, whichever one ends up deciding:
+  // a reviewer should see that ORCID and OpenAlex agreed, or that they did not.
+  for (const e of (sources.orcid?.employments ?? []).filter((e) => e.current)) {
+    evidence.push({
+      source: 'orcid',
+      institution: e.organization,
+      current: true,
+      detail: [e.role, e.department, e.startYear ? `since ${e.startYear}` : undefined].filter(Boolean).join(', ') || undefined,
+    });
+  }
+  if (sources.orcid && !(sources.orcid.employments ?? []).some((e) => e.current)) {
+    evidence.push({ source: 'orcid', detail: 'No current employment on the ORCID record' });
+  }
+  for (const i of sources.openalex?.lastKnown ?? []) {
+    const years = sources.openalex?.affiliations.find((a) => a.id === i.id)?.years ?? [];
+    evidence.push({
+      source: 'openalex',
+      institution: i.name,
+      current: true,
+      detail: `Named on the latest indexed work${years.length ? ` (${Math.max(...years)})` : ''}`,
+    });
+  }
+  if (sources.openalex && sources.openalex.lastKnown.length === 0) {
+    evidence.push({ source: 'openalex', detail: 'No last-known institution on the author record' });
+  }
+
   if (reg?.directory_listed) {
     return decide('current', 'directory', { name: lead.institutionName, openAlexId: lead.institutionOpenAlexId }, {
       directoryListed: true,
@@ -288,14 +314,6 @@ export function combineAffiliationEvidence(
 
   // --- 2. ORCID: an employment the researcher has left open ---------------
   const current = (sources.orcid?.employments ?? []).filter((e) => e.current);
-  for (const e of current) {
-    evidence.push({
-      source: 'orcid',
-      institution: e.organization,
-      current: true,
-      detail: [e.role, e.department, e.startYear ? `since ${e.startYear}` : undefined].filter(Boolean).join(', ') || undefined,
-    });
-  }
   if (current.length > 0) {
     const here = current.find((e) => sameInstitution(leadInst, { name: e.organization }));
     if (here) {
@@ -325,9 +343,6 @@ export function combineAffiliationEvidence(
   // --- 3. OpenAlex: the affiliation on the latest paper ---------------------
   if (sources.openalex) {
     const oa = assessAffiliation(lead, sources.openalex, now);
-    for (const i of sources.openalex.lastKnown) {
-      evidence.push({ source: 'openalex', institution: i.name, current: true, detail: 'Named on the latest indexed work' });
-    }
     const directoryListed = reg?.directory_checked ? Boolean(reg.directory_listed) : undefined;
     return {
       ...oa,
