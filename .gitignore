@@ -1,0 +1,50 @@
+# Secrets — never commit
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+token.json
+
+# Node
+node_modules/
+dist/
+build/
+*.log
+npm-debug.log*
+.npm/
+.vite/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local scratch
+tmp/
+.cache/
+
+# Local MongoDB data directory (npm run dev)
+.mongo-data/
+
+# Local test artefacts and scratch
+*.tmp.ts
+*.tmp.mjs
+*.csv
+scraper-service/.playwright/
+
+# Claude Code local session settings
+.claude/settings.local.json
+
+# Service-account keys (belong to the website repo, never here)
+serviceAccountKey.json

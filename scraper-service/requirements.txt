@@ -1,0 +1,17 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.5
+pydantic-settings==2.7.1
+httpx==0.28.1
+beautifulsoup4==4.12.3
+lxml==5.3.0
+python-dotenv==1.0.1
+# RFC 9309-compliant robots.txt parsing (longest-match rule resolution).
+# The stdlib `urllib.robotparser` uses first-match and over-blocks — see
+# app/core/robots.py for the specific failure case this avoids.
+protego==0.5.0
+# Phase 2: JS-heavy faculty pages. After installing, run `playwright install chromium`
+# once to download the browser binary (the pip package alone is not enough).
+playwright==1.49.1
+# Per-lead enrichment: reads open-access papers (PDF) for the Methods section.
+pypdf==5.1.0

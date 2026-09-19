@@ -1,0 +1,258 @@
+# Faculty and news sources for the discovery pipeline.
+#
+# SCOPE: discovery is targeted at Indian institutions of national importance —
+# the IITs, NITs and IIITs. That targeting is enforced primarily through
+# OpenAlex, which filters by institution id server-side (see
+# backend/src/data/indianInstitutions.ts — 72 institutions with verified ids).
+# Scraping is a supplement, not the mechanism.
+#
+# EVERY TARGET BELOW WAS PROBED LIVE before being enabled. Of ~49 Indian faculty
+# URLs tested, only 5 are both reachable and parseable. The failures break down
+# as: wrong/renamed URLs (404), unreachable hosts, JS-rendered directories, and
+# WAF blocks (403).
+#
+# ON GETTING PAST BLOCKS — all of this was measured, not assumed:
+#
+#   browser User-Agent header     unlocked 1 of 12
+#   real browser (Playwright)     unlocked 2 of 12 (real TLS fingerprint)
+#   session warm-up + Referer     unlocked 0 of 4
+#   correct URL                   unlocked 5 of 20   <-- by far the biggest win
+#
+# The "IP reputation" theory was WRONG and is recorded here so it is not
+# repeated: our egress is already a residential Indian ISP address, which is the
+# most legitimate-looking origin possible for these sites, and IIT Kanpur serves
+# its Chemistry directory happily to the same crawler from the same IP while
+# 403-ing /che/faculty. These are per-path server rules, not bot detection. A
+# proxy would change nothing.
+#
+# The real constraint was hand-guessed URLs. scripts/find_targets.py crawls each
+# institution's own site for directory links and found five working pages that
+# had been written off as 404 or 403. Run it before adding anything by hand.
+#
+# robots.txt remains a hard gate regardless, and we do not spoof the User-Agent.
+#
+# This is exactly why OpenAlex carries the weight: it indexes all 72 of these
+# institutions — including every one whose website blocks us — and will not
+# break or block.
+#
+# Before adding a target:
+#   1. Probe it first. If it errors, 403s, or robots.txt disallows it, leave it
+#      disabled with a reason rather than deleting it.
+#   2. Prefer a departmental faculty INDEX page over individual profiles.
+#   3. Prefer an RSS/Atom feed over an HTML news page.
+
+faculty:
+  # --- Indian institutes: verified working ---------------------------------
+  # Verified: 5 people with academic titles.
+  - university_name: National Institute of Technology Rourkela
+    department: Chemistry
+    url: https://www.nitrkl.ac.in/CH/Faculty
+    enabled: true
+
+  # Verified: 5 people with academic titles.
+  - university_name: National Institute of Technology Karnataka
+    department: Chemistry
+    url: https://chemistry.nitk.ac.in/faculty
+    enabled: true
+
+  # Verified: 9 people with profile links.
+  - university_name: International Institute of Information Technology Hyderabad
+    department: Faculty
+    url: https://www.iiit.ac.in/faculty/
+    enabled: true
+
+  # Verified: 15 people with academic titles.
+  - university_name: Indian Institute of Technology Indore
+    department: Chemistry
+    url: https://chemistry.iiti.ac.in/faculty
+    enabled: true
+
+  # Verified: 13 people — but ONLY via the browser tier. The directory is
+  # client-side rendered, so a plain HTTP fetch returns an empty page.
+  - university_name: Indian Institute of Technology Indore
+    department: Metallurgical Engineering and Materials Science
+    url: https://mems.iiti.ac.in/faculty
+    enabled: true
+
+  # Verified: 39 people, all with profile links — the largest single Indian target.
+  - university_name: International Institute of Information Technology Bangalore
+    department: Faculty
+    url: https://www.iiitb.ac.in/faculty
+    enabled: true
+
+  # --- Found by scripts/find_targets.py, not by hand ------------------------
+  # Every one of these was previously recorded as 404 or 403 because the URL had
+  # been guessed. Crawling each institution's own site found the real ones.
+
+  # Verified: 22 people, 22 emails. Previously recorded as "http_error".
+  - university_name: Malaviya National Institute of Technology Jaipur
+    department: Chemistry
+    url: https://mnit.ac.in/dept_chemistry/people.php
+    enabled: true
+
+  # Verified: 15 people, 15 emails. Previously recorded as "404".
+  - university_name: Indian Institute of Technology BHU
+    department: Chemistry
+    url: https://iitbhu.ac.in/dept/chy/faculty
+    enabled: true
+
+  # Verified: 13 people. Previously recorded as WAF-BLOCKED — wrongly. Only the
+  # /che/faculty path 403s; this one serves fine to the same crawler from the
+  # same IP, which is what disproved the "IP reputation" theory.
+  - university_name: Indian Institute of Technology Kanpur
+    department: Chemistry
+    url: https://www.iitk.ac.in/chm/index.php/physical-faculty
+    enabled: true
+
+  # Verified: 8 people, 8 emails. Previously recorded as "404".
+  - university_name: National Institute of Technology Durgapur
+    department: Chemistry
+    url: https://nitdgp.ac.in/department/chemistry/faculty-5
+    enabled: true
+
+  # --- Indian institutes: probed and NOT working ---------------------------
+  # Left here so nobody re-tries them blindly. Re-probe occasionally; sites change.
+  - university_name: Indian Institute of Technology Bombay
+    department: Chemistry
+    url: https://www.chem.iitb.ac.in/people/faculty
+    enabled: false
+    disabled_reason: fetches, but no parseable person blocks (JS-rendered directory)
+
+  - university_name: Indian Institute of Technology Madras
+    department: Chemistry
+    url: https://chem.iitm.ac.in/faculty/
+    enabled: false
+    disabled_reason: only 2 extractable entries — directory is JS-rendered
+
+  - university_name: Indian Institute of Technology Delhi
+    department: Chemistry
+    url: https://chemistry.iitd.ac.in/faculty
+    enabled: false
+    disabled_reason: HTTP error
+
+  - university_name: Indian Institute of Technology Kanpur
+    department: Chemical Engineering
+    url: https://www.iitk.ac.in/che/faculty
+    enabled: false
+    disabled_reason: HTTP 403 on this path only — the Chemistry directory above works fine
+
+  - university_name: Indian Institute of Technology Guwahati
+    department: Chemistry
+    url: https://www.iitg.ac.in/chem/faculty
+    enabled: false
+    disabled_reason: HTTP 403 on this path; no working alternative found yet
+
+  - university_name: Indian Institute of Science
+    department: Materials Engineering
+    url: https://materials.iisc.ac.in/faculty/
+    enabled: false
+    disabled_reason: HTTP 403 from plain Apache (path denied in server config, not bot detection)
+
+  - university_name: National Institute of Technology Tiruchirappalli
+    department: Chemistry
+    url: https://www.nitt.edu/home/academics/departments/chemistry/faculty/
+    enabled: false
+    disabled_reason: only 4 extractable entries, below the useful threshold
+
+  - university_name: Indian Institute of Information Technology Allahabad
+    department: Faculty
+    url: https://www.iiita.ac.in/?q=facultylist
+    enabled: false
+    disabled_reason: page structure yields navigation items, not faculty records
+
+  # --- Non-Indian pages that parse well ------------------------------------
+  # Disabled by default because discovery is India-targeted. Enable these only
+  # for a `global` run — they are known-good and worth keeping on hand.
+  - university_name: University of Illinois Urbana-Champaign
+    department: Materials Science and Engineering
+    url: https://matse.illinois.edu/people/faculty
+    enabled: false
+    disabled_reason: outside the India target scope (verified working — 61 people, 61 emails)
+
+  - university_name: Northwestern University
+    department: Chemistry
+    url: https://chemistry.northwestern.edu/people/faculty/
+    enabled: false
+    disabled_reason: outside the India target scope (verified working — 52 people, 52 emails)
+
+  - university_name: University of Washington
+    department: Chemistry
+    url: https://chem.washington.edu/people/faculty
+    enabled: false
+    disabled_reason: outside the India target scope (verified working — 44 people, 44 emails)
+
+  - university_name: Massachusetts Institute of Technology
+    department: Materials Science and Engineering
+    url: https://dmse.mit.edu/people/faculty/
+    enabled: false
+    disabled_reason: outside the India target scope (verified working — 47 people)
+
+news:
+  # --- India-focused feeds: all verified live ------------------------------
+  - university_name: Indian Institute of Technology Madras
+    url: https://www.iitm.ac.in/rss.xml
+    type: rss
+    enabled: true
+
+  - university_name: Research Matters India
+    url: https://researchmatters.in/rss.xml
+    type: rss
+    enabled: true
+
+  - university_name: The Hindu (Science & Technology)
+    url: https://www.thehindu.com/sci-tech/science/feeder/default.rss
+    type: rss
+    enabled: true
+
+  # --- Probed and not usable ------------------------------------------------
+  - university_name: Indian Institute of Technology Delhi
+    url: https://home.iitd.ac.in/rss.xml
+    type: rss
+    enabled: false
+    disabled_reason: URL does not serve a feed
+
+  - university_name: Indian Institute of Technology Bombay
+    url: https://www.iitb.ac.in/en/rss.xml
+    type: rss
+    enabled: false
+    disabled_reason: HTTP error
+
+  - university_name: Nature India
+    url: https://www.nature.com/nindia.rss
+    type: rss
+    enabled: false
+    disabled_reason: URL does not serve a feed
+
+  # --- General science feeds (working, but not India-specific) -------------
+  - university_name: ScienceDaily
+    url: https://www.sciencedaily.com/rss/matter_energy/chemistry.xml
+    type: rss
+    enabled: false
+    disabled_reason: not India-specific (verified working — 30 items)
+
+  - university_name: Phys.org
+    url: https://phys.org/rss-feed/chemistry-news/
+    type: rss
+    enabled: false
+    disabled_reason: not India-specific (verified working — 30 items)
+
+# Grant sources use official public APIs rather than scraping.
+#
+# IMPORTANT: NIH and NSF fund US institutions almost exclusively, so they
+# contribute nothing to an India-targeted run and are excluded from the default
+# source set (see discoveryOrchestrator.ts). They remain available for a
+# `global` run. India's own funders (SERB, DST, CSIR) publish no comparable
+# public API — adding them would mean scraping, which is why Indian grant data
+# is not currently a source.
+grants:
+  - name: NIH RePORTER
+    api: https://api.reporter.nih.gov/v2/projects/search
+    method: POST
+    enabled: true
+    note: US-funded PIs only — excluded from India-targeted runs
+
+  - name: NSF Award Search
+    api: https://www.research.gov/awardapi-service/v1/awards.json
+    method: GET
+    enabled: true
+    note: US-funded PIs only — excluded from India-targeted runs

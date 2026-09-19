@@ -1,0 +1,38 @@
+{
+  "name": "classone-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI Sales Automation Platform - API, data layer, AI orchestration, email, scheduling",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:db": "tsx src/scripts/devDatabase.ts",
+    "db:reset": "tsx src/scripts/resetDatabase.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "seed:catalog": "tsx src/scripts/seedCatalog.ts",
+    "catalog:export": "node src/scripts/exportWebsiteCatalog.mjs",
+    "smoke": "tsx src/scripts/smokeTest.ts",
+    "smoke:live": "tsx src/scripts/liveSmokeTest.ts",
+    "test:enrichment": "tsx src/scripts/testEnrichment.ts",
+    "probe:sources": "tsx src/scripts/probeSources.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mongoose": "^8.9.5",
+    "node-cron": "^4.6.0",
+    "openai": "^7.4.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.7",
+    "@types/node-cron": "^3.0.11",
+    "mongodb-memory-server": "^11.2.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
