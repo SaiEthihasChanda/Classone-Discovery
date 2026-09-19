@@ -96,6 +96,9 @@ export async function discoverByName(
     institution: {
       name: best.institutionName,
       normalizedNameKey: institutionKey,
+      openAlexId: best.institutionOpenAlexId,
+      discoveredName: best.institutionName,
+      discoveredOpenAlexId: best.institutionOpenAlexId,
       country: best.country,
     },
     research: {

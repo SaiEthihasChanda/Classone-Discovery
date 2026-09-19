@@ -82,6 +82,8 @@ const leadSchema = new Schema(
       name: { type: String, trim: true },
       normalizedNameKey: String,
       openAlexId: String,
+      discoveredName: String,
+      discoveredOpenAlexId: String,
       department: String,
       country: String,
       websiteUrl: String,

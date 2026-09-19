@@ -81,6 +81,7 @@ export async function createLead(
     institution: {
       name: input.institutionName?.trim(),
       normalizedNameKey: institutionKey,
+      discoveredName: input.institutionName?.trim(),
       department: input.department,
       country: input.country,
       websiteUrl: input.institutionWebsite,

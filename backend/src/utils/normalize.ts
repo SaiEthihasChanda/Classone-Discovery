@@ -60,7 +60,41 @@ export function normalizeInstitutionKey(name?: string): string | undefined {
  * Expands the short forms Indian institutes are usually written in, so
  * "IIT Bombay" and "Indian Institute of Technology Bombay" compare equal.
  */
+/** Campus short forms that appear in unit names ("IITB-Monash Research Academy"). */
+const CAMPUS_CODES: Array<[RegExp, string]> = [
+  [/\bIITB\b/g, 'Indian Institute of Technology Bombay'],
+  [/\bIITD\b/g, 'Indian Institute of Technology Delhi'],
+  [/\bIITM\b/g, 'Indian Institute of Technology Madras'],
+  [/\bIITK\b/g, 'Indian Institute of Technology Kanpur'],
+  [/\bIIT\s?KGP\b/g, 'Indian Institute of Technology Kharagpur'],
+  [/\bIITR\b/g, 'Indian Institute of Technology Roorkee'],
+  [/\bIITG\b/g, 'Indian Institute of Technology Guwahati'],
+  [/\bIITH\b/g, 'Indian Institute of Technology Hyderabad'],
+  [/\bIIT\s?BHU\b/g, 'Indian Institute of Technology BHU'],
+  [/\bIITI\b/g, 'Indian Institute of Technology Indore'],
+  [/\bIITJ\b/g, 'Indian Institute of Technology Jodhpur'],
+  [/\bIITGN\b/g, 'Indian Institute of Technology Gandhinagar'],
+  [/\bIITRPR\b/g, 'Indian Institute of Technology Ropar'],
+  [/\bIITP\b/g, 'Indian Institute of Technology Patna'],
+  [/\bIITBBS\b/g, 'Indian Institute of Technology Bhubaneswar'],
+  [/\bIITPKD\b/g, 'Indian Institute of Technology Palakkad'],
+  [/\bIITTP\b/g, 'Indian Institute of Technology Tirupati'],
+  [/\bIITDH\b/g, 'Indian Institute of Technology Dharwad'],
+  [/\bIIT\s?GOA\b/gi, 'Indian Institute of Technology Goa'],
+  [/\bNITK\b/g, 'National Institute of Technology Karnataka'],
+  [/\bNITT\b/g, 'National Institute of Technology Tiruchirappalli'],
+  [/\bNITW\b/g, 'National Institute of Technology Warangal'],
+  [/\bNITC\b/g, 'National Institute of Technology Calicut'],
+  [/\bNITR\b/g, 'National Institute of Technology Rourkela'],
+  [/\bMNIT\b/g, 'Malaviya National Institute of Technology Jaipur'],
+  [/\bVNIT\b/g, 'Visvesvaraya National Institute of Technology'],
+  [/\bSVNIT\b/g, 'Sardar Vallabhbhai National Institute of Technology Surat'],
+  [/\bMANIT\b/g, 'Maulana Azad National Institute of Technology'],
+  [/\bMNNIT\b/g, 'Motilal Nehru National Institute of Technology'],
+];
+
 export function expandInstitutionAbbreviations(name: string): string {
+  for (const [re, full] of CAMPUS_CODES) name = name.replace(re, full);
   return name
     .replace(/\bIIIT\b/gi, 'Indian Institute of Information Technology')
     .replace(/\bIIT\b/gi, 'Indian Institute of Technology')

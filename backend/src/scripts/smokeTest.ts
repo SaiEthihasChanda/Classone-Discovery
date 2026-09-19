@@ -772,6 +772,26 @@ async function main(): Promise<void> {
     assert.equal(a.affiliation.lastSeenYear, 2021);
   });
 
+  await check('a campus unit whose lineage includes the institute is NOT a move (IITB-Monash)', async () => {
+    const academy = { id: 'I4210999', name: 'IITB-Monash Research Academy', country: 'IN', lineage: ['I4210999', IITB.id] };
+    const a = assessAffiliation(atIITB, {
+      authorId: 'A1',
+      lastKnown: [academy],
+      affiliations: [{ ...academy, years: [2026] }, { ...IITB, years: [2024] }],
+    }, NOW);
+    assert.equal(a.status, 'current', 'lineage should identify the academy as IIT Bombay');
+    assert.equal(a.institution.name, IITB.name);
+  });
+
+  await check('a campus short form in a unit name matches by name too ("IITB-…" with no ids)', async () => {
+    const a = assessAffiliation({ institutionName: 'Indian Institute of Technology Bombay' }, {
+      authorId: 'A1',
+      lastKnown: [{ id: 'I1', name: 'IITB-Monash Research Academy' }],
+      affiliations: [{ id: 'I1', name: 'IITB-Monash Research Academy', years: [2026] }],
+    }, NOW);
+    assert.equal(a.status, 'current');
+  });
+
   await check('matches by name when the lead has no institution id', async () => {
     const a = assessAffiliation({ institutionName: 'IIT Bombay' }, {
       authorId: 'A1',
@@ -811,6 +831,22 @@ async function main(): Promise<void> {
     assert.ok(!affiliationIsStale(lead), 'a fresh check must not read as stale');
   });
 
+  await check('a re-check after a move still measures against the DISCOVERED institute', async () => {
+    // The mover is now shown at NUS. OpenAlex says they are current at NUS.
+    // The status must stay "moved (from IIT Bombay)", not flip to "current".
+    const { lead, assessment } = await verifyLeadAffiliation(moverId, {
+      fetchAffiliations: async () => ({
+        authorId: 'A5000000001',
+        lastKnown: [NUS],
+        affiliations: [{ ...NUS, years: [2026] }, { ...IITB, years: [2025] }],
+      }),
+    });
+    assert.equal(assessment?.status, 'moved');
+    assert.equal(lead.institution.name, NUS.name);
+    assert.equal(lead.institution.discoveredName, IITB.name, 'reference point should be pinned');
+    assert.equal(lead.institution.affiliation?.previousInstitution, IITB.name);
+  });
+
   await check('verifyLeadAffiliation BLANKS an institution that cannot be confirmed', async () => {
     const { lead, assessment } = await verifyLeadAffiliation(moverId, {
       fetchAffiliations: async () => ({
@@ -822,8 +858,8 @@ async function main(): Promise<void> {
     assert.equal(assessment?.status, 'unknown');
     assert.equal(lead.institution.name, undefined, 'institution should be blank');
     assert.equal(lead.institution.normalizedNameKey, undefined);
-    // The previous institute is the one we were just at (NUS), kept for the record.
-    assert.equal(lead.institution.affiliation?.previousInstitution, NUS.name);
+    // The previous institute is always the discovered one, whatever the last check showed.
+    assert.equal(lead.institution.affiliation?.previousInstitution, IITB.name);
     const fetched = (await request(`/leads/${moverId}`)).body;
     assert.equal(fetched.institution.name, undefined, 'blank must persist, not just be returned');
   });

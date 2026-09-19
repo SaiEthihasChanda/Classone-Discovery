@@ -96,6 +96,14 @@ export interface LeadInstitution {
   normalizedNameKey?: string;
   /** OpenAlex institution id ("I162827531") when known — exact matching for the affiliation check. */
   openAlexId?: string;
+  /**
+   * The institute discovery attributed this person to — the fixed reference
+   * point every affiliation check is measured against. `name` above is where
+   * they are NOW; this is where they were found. Without it a re-check after a
+   * move would ask "still at the new place?", answer yes, and forget the move.
+   */
+  discoveredName?: string;
+  discoveredOpenAlexId?: string;
   department?: string;
   country?: string;
   websiteUrl?: string;

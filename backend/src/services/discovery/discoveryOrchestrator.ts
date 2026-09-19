@@ -536,6 +536,8 @@ async function createLeadFromCandidate(
       name: candidate.institutionName,
       normalizedNameKey: normalizeInstitutionKey(candidate.institutionName),
       openAlexId: candidate.institutionOpenAlexId ?? knownInstitutionId(candidate.institutionName),
+      discoveredName: candidate.institutionName,
+      discoveredOpenAlexId: candidate.institutionOpenAlexId ?? knownInstitutionId(candidate.institutionName),
       department: candidate.department,
       country: candidate.country,
     },

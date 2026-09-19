@@ -56,9 +56,14 @@ export interface AffiliationAssessment {
 /** True if the OpenAlex institution is the one on the lead, by id or by name. */
 function sameInstitution(
   lead: { name?: string; openAlexId?: string },
-  inst: { id?: string; name?: string },
+  inst: { id?: string; name?: string; lineage?: string[] },
 ): boolean {
-  if (lead.openAlexId && inst.id) return lead.openAlexId === inst.id;
+  if (lead.openAlexId && inst.id) {
+    if (lead.openAlexId === inst.id) return true;
+    // A research academy, centre or school on the campus is the institute:
+    // OpenAlex lists the parent in the unit's lineage.
+    if (inst.lineage?.includes(lead.openAlexId)) return true;
+  }
   const a = instKey(lead.name);
   const b = instKey(inst.name);
   if (!a || !b) return false;
@@ -431,15 +436,21 @@ export async function verifyLeadAffiliation(
 
   if (!openalex && !orcidRecord && !registry) return { lead, assessment: null };
 
-  // Check the institute the lead currently shows. When that is blank (an
-  // earlier check could not place them), fall back to the last one known, so a
-  // researcher who resurfaces there is picked up again.
-  const reference = lead.institution.name
-    ? { name: lead.institution.name, id: lead.institution.openAlexId ?? knownInstitutionId(lead.institution.name) }
-    : {
-        name: lead.institution.affiliation?.previousInstitution,
-        id: lead.institution.affiliation?.previousInstitutionOpenAlexId,
-      };
+  // Measure against the institute discovery found them at — never against
+  // wherever the last check moved them to, or a re-check would ask "still at
+  // the new place?", say yes, and lose the move. Older leads without the
+  // field get it from the first move recorded, else from their current name.
+  const reference = {
+    name:
+      lead.institution.discoveredName ??
+      lead.institution.affiliation?.previousInstitution ??
+      lead.institution.name,
+    id:
+      lead.institution.discoveredOpenAlexId ??
+      lead.institution.affiliation?.previousInstitutionOpenAlexId ??
+      lead.institution.openAlexId ??
+      knownInstitutionId(lead.institution.discoveredName ?? lead.institution.name),
+  };
   const assessment = combineAffiliationEvidence(
     { institutionName: reference.name, institutionOpenAlexId: reference.id },
     { openalex, orcid: orcidRecord, registry },
@@ -447,6 +458,11 @@ export async function verifyLeadAffiliation(
 
   const changed = assessment.institution.name !== lead.institution.name;
   const { set, unset } = affiliationPatch(lead, assessment);
+  // Pin the reference point on leads that predate it.
+  if (!lead.institution.discoveredName && reference.name) {
+    (set.institution as Record<string, unknown>).discoveredName = reference.name;
+    if (reference.id) (set.institution as Record<string, unknown>).discoveredOpenAlexId = reference.id;
+  }
   const updated = (await repositories.leads.updateById(lead.id, set, { unset })) ?? lead;
 
   if (changed) {

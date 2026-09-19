@@ -389,9 +389,14 @@ export async function discoverViaOpenAlex(params: {
 export interface AuthorAffiliations {
   authorId: string;
   /** Institutions named on the author's most recent works. */
-  lastKnown: Array<{ id: string; name: string; country?: string }>;
-  /** Every institution they have published from, with the years. */
-  affiliations: Array<{ id: string; name: string; country?: string; years: number[] }>;
+  lastKnown: Array<{ id: string; name: string; country?: string; lineage?: string[] }>;
+  /**
+   * Every institution they have published from, with the years. `lineage` is
+   * the institution plus its parents — a joint academy or research centre on a
+   * campus carries the parent institute's id here, which is how it is
+   * recognised as the same place rather than a move.
+   */
+  affiliations: Array<{ id: string; name: string; country?: string; years: number[]; lineage?: string[] }>;
 }
 
 /**
@@ -408,10 +413,13 @@ export async function getAuthorAffiliations(authorId: string): Promise<AuthorAff
   url.searchParams.set('select', 'id,display_name,last_known_institutions,affiliations');
   if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
 
+  interface InstitutionWithLineage extends OpenAlexInstitution {
+    lineage?: string[];
+  }
   interface Record_ {
     id?: string;
-    last_known_institutions?: OpenAlexInstitution[];
-    affiliations?: Array<{ institution?: OpenAlexInstitution; years?: number[] }>;
+    last_known_institutions?: InstitutionWithLineage[];
+    affiliations?: Array<{ institution?: InstitutionWithLineage; years?: number[] }>;
   }
 
   let record: Record_;
@@ -426,7 +434,12 @@ export async function getAuthorAffiliations(authorId: string): Promise<AuthorAff
     authorId: id,
     lastKnown: (record.last_known_institutions ?? [])
       .filter((i) => i.id && i.display_name)
-      .map((i) => ({ id: short(i.id), name: i.display_name!, country: i.country_code })),
+      .map((i) => ({
+        id: short(i.id),
+        name: i.display_name!,
+        country: i.country_code,
+        lineage: (i.lineage ?? []).map(short),
+      })),
     affiliations: (record.affiliations ?? [])
       .filter((a) => a.institution?.id && a.institution.display_name)
       .map((a) => ({
@@ -434,6 +447,7 @@ export async function getAuthorAffiliations(authorId: string): Promise<AuthorAff
         name: a.institution!.display_name!,
         country: a.institution!.country_code,
         years: (a.years ?? []).filter((y): y is number => typeof y === 'number'),
+        lineage: (a.institution!.lineage ?? []).map(short),
       })),
   };
 }

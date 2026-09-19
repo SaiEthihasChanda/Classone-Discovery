@@ -38,6 +38,26 @@ from ..scrapers.tiered_fetcher import fetch_with_escalation
 
 router = APIRouter(prefix="/scrape", tags=["enrich"])
 
+# A faculty directory changes weekly; a bulk affiliation pass over 800 leads
+# would otherwise fetch the same ten pages hundreds of times, each waiting on
+# the per-domain delay. Parsed people lists are kept for a short while so one
+# pass reads each directory once. Keyed by URL; entries expire on their own.
+_DIRECTORY_TTL_SEC = 30 * 60
+_directory_cache: dict[str, tuple[float, list]] = {}
+
+
+async def _directory_people(url: str, timeout_sec: int, allow_browser: bool) -> list:
+    """Parsed people for a directory URL, served from the short cache when fresh."""
+    import time as _time
+
+    hit = _directory_cache.get(url)
+    if hit and (_time.monotonic() - hit[0]) < _DIRECTORY_TTL_SEC:
+        return hit[1]
+    outcome = await fetch_with_escalation(url, timeout_sec, allow_browser=allow_browser, allow_proxy=False)
+    people = parse_faculty_page(outcome.html, url)
+    _directory_cache[url] = (_time.monotonic(), people)
+    return people
+
 
 def _error(target: str, exc: Exception) -> ScrapeError:
     if isinstance(exc, FetchError):
@@ -214,10 +234,7 @@ async def affiliation(request: AffiliationRequest) -> AffiliationResponse:
     # --- Institute directory -------------------------------------------------
     for directory_url in request.directory_urls[:3]:
         try:
-            outcome = await fetch_with_escalation(
-                directory_url, request.timeout_sec_per_page, allow_browser=request.allow_browser, allow_proxy=False
-            )
-            people = parse_faculty_page(outcome.html, directory_url)
+            people = await _directory_people(directory_url, request.timeout_sec_per_page, request.allow_browser)
         except Exception as exc:  # noqa: BLE001
             out.errors.append(_error(directory_url, exc))
             continue
