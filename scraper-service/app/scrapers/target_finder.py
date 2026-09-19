@@ -180,3 +180,135 @@ async def find_for_many(roots: list[tuple[str, str]], max_probes: int = 6) -> di
 
     pairs = await asyncio.gather(*(one(n, u) for n, u in roots))
     return dict(pairs)
+
+
+# ---------------------------------------------------------------------------
+# Two-hop discovery: homepage -> department pages -> faculty listings
+# ---------------------------------------------------------------------------
+
+
+def _links_with_text(html: str, base_url: str) -> list[tuple[str, str]]:
+    """Every same-site link on a page as (absolute url, link text)."""
+    soup = BeautifulSoup(html, "lxml")
+    base_host = urlparse(base_url).netloc
+    root = ".".join(base_host.split(".")[-3:])
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        if not isinstance(href, str) or SKIP_PATTERNS.search(href):
+            continue
+        absolute = urljoin(base_url, href).split("#")[0].rstrip("/")
+        parsed = urlparse(absolute)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc.endswith(root):
+            continue
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        text = " ".join(anchor.get_text(" ", strip=True).split())[:80]
+        out.append((absolute, text))
+    return out
+
+
+def _department_guess(url: str, text: str, dept_hints: list[str]) -> str | None:
+    hay = f"{url} {text}".lower()
+    for hint in dept_hints:
+        if hint.lower() in hay:
+            return hint
+    return None
+
+
+async def find_department_faculty_pages(
+    root_url: str,
+    dept_hints: list[str],
+    max_probes: int = 30,
+    timeout_sec: int = 20,
+) -> list[dict]:
+    """Finds the faculty listings of the departments named by `dept_hints`.
+
+    Indian institute sites almost never link a faculty list from the homepage;
+    the path is homepage -> "Departments" / a department's own subdomain ->
+    "Faculty". So this goes two hops: department-looking links from the
+    homepage are fetched, and directory-looking links on THOSE pages are
+    probed. Pages that parse as a listing of at least three people are
+    returned with the department they were reached through.
+
+    Same rules as everything else here: robots.txt, an honest User-Agent,
+    the per-domain delay, and a hard cap on fetches per institute.
+    """
+    results: list[dict] = []
+    try:
+        homepage = await fetch_page(root_url, timeout_sec)
+    except FetchError as exc:
+        return [{"url": root_url, "error": exc.reason.value, "detail": exc.detail}]
+    except Exception as exc:  # noqa: BLE001
+        return [{"url": root_url, "error": "unknown", "detail": f"{type(exc).__name__}: {exc}"}]
+
+    def rank(url: str, text: str, hop: int) -> int:
+        score = _score_candidate(url, text)
+        if _department_guess(url, text, dept_hints):
+            score += 20
+        # A second-hop link that says "faculty" outranks a first-hop one that
+        # merely names a department.
+        if hop == 2 and any(h in f"{url} {text}".lower() for h in ("faculty", "people", "staff")):
+            score += 15
+        return score
+
+    queue: list[tuple[int, str, str, int, str | None]] = []  # (-score, url, text, hop, dept)
+    for url, text in _links_with_text(homepage, root_url):
+        dept = _department_guess(url, text, dept_hints)
+        score = rank(url, text, 1)
+        if score > 0 or dept:
+            queue.append((-score, url, text, 1, dept))
+    queue.sort()
+
+    probed: set[str] = set([root_url.rstrip("/")])
+    fetched = 0
+    found_urls: set[str] = set()
+
+    while queue and fetched < max_probes:
+        _neg, url, text, hop, dept = queue.pop(0)
+        if url in probed:
+            continue
+        probed.add(url)
+
+        try:
+            html = await fetch_page(url, timeout_sec)
+        except Exception:  # noqa: BLE001 - one bad page must not stop the crawl
+            continue
+        fetched += 1
+
+        try:
+            people: list[ExtractedPerson] = parse_faculty_page(html, url)
+        except Exception:  # noqa: BLE001
+            people = []
+
+        if len(people) >= 3 and url not in found_urls:
+            found_urls.add(url)
+            results.append(
+                {
+                    "url": url,
+                    "department": dept or _department_guess(url, text, dept_hints),
+                    "people": len(people),
+                    "emails": sum(1 for p in people if p.email),
+                    "profiles": sum(1 for p in people if p.profile_url),
+                    "sample": [p.name for p in people[:3]],
+                    "hop": hop,
+                }
+            )
+            continue
+
+        # Not a listing — but if it is a department page, its own links are
+        # where the listing will be.
+        this_dept = dept or _department_guess(url, text, dept_hints)
+        if hop == 1 and this_dept:
+            for sub_url, sub_text in _links_with_text(html, url):
+                if sub_url in probed:
+                    continue
+                score = rank(sub_url, sub_text, 2)
+                hay = f"{sub_url} {sub_text}".lower()
+                if score > 0 and any(h in hay for h in DIRECTORY_HINTS):
+                    queue.append((-score, sub_url, sub_text, 2, this_dept))
+            queue.sort()
+
+    return sorted(results, key=lambda r: -r.get("people", 0))

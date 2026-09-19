@@ -49,6 +49,8 @@ LAB_FACILITIES = """<html><body><h1>Facilities</h1>
 </ul></body></html>"""
 
 PAPER_HTML = """<html><body><h1>A wearable sweat lactate sensor</h1>
+<p>Asha Rao<sup>a,*</sup>, Vikram Nair<sup>b</sup></p>
+<p>* Corresponding author. E-mail: asha.rao@fake-iit.test (A. Rao); editor@journal.test</p>
 <h2>Abstract</h2><p>We report a flexible sensor.</p>
 <h2>2. Experimental</h2>
 <p>All electrochemical measurements were performed using an EmStat Pico potentiostat (PalmSens BV, The Netherlands) controlled via PSTrace. Impedance spectra were recorded on a Bio-Logic SP-300.</p>
@@ -110,6 +112,30 @@ REGISTRY_PROFILE = """<html><body><h1>Dr. Asha Rao</h1>
 
 REGISTRY_PROFILE_OTHER = """<html><body><h1>Dr. Ashok Rao</h1><p>Affiliation: Somewhere Else University</p></body></html>"""
 
+HOMEPAGE = """<html><body><nav><a href="/">Home</a><a href="/about">About</a><a href="/admissions">Admissions</a></nav>
+<h1>Fake IIT</h1>
+<h2>Academics</h2>
+<ul>
+<li><a href="/departments">Departments</a></li>
+<li><a href="/dept/chemistry">Department of Chemistry</a></li>
+<li><a href="/dept/physics">Department of Physics</a></li>
+<li><a href="/dept/mems">Metallurgical Engineering and Materials Science</a></li>
+</ul>
+<footer><a href="/tenders">Tenders</a><a href="/news">News</a></footer></body></html>"""
+
+DEPT_CHEM = """<html><body><h1>Department of Chemistry</h1>
+<ul><li><a href="/dept/chemistry">Home</a></li><li><a href="/dept/chemistry/research">Research</a></li>
+<li><a href="/dept/chemistry/faculty">Faculty</a></li><li><a href="/dept/chemistry/students">Students</a></li></ul>
+<p>Welcome to the department.</p></body></html>"""
+
+DEPT_MEMS = """<html><body><h1>MEMS</h1><ul><li><a href="/dept/mems/people">People</a></li></ul></body></html>"""
+
+MEMS_PEOPLE = """<html><body><h1>People</h1>
+<div class="person"><h3><a href="/people/k-rao">Dr. Kavita Rao</a></h3><p>Professor</p></div>
+<div class="person"><h3><a href="/people/s-menon">Dr. Suresh Menon</a></h3><p>Associate Professor</p></div>
+<div class="person"><h3><a href="/people/p-jain">Dr. Pooja Jain</a></h3><p>Assistant Professor</p></div>
+</body></html>"""
+
 DIRECTORY_WITHOUT = DIRECTORY.replace('<div class="faculty-card"><h3><a href="/people/asha-rao">Dr. Asha Rao</a></h3><p>Professor</p><p>Electrochemistry</p></div>', '')
 
 ROUTES: dict[str, tuple[str, bytes]] = {
@@ -119,6 +145,16 @@ ROUTES: dict[str, tuple[str, bytes]] = {
     "/faculty-without": ("text/html", DIRECTORY_WITHOUT.encode()),
     "/robots.txt": ("text/plain", b"User-agent: *\nAllow: /\n"),
     "/faculty": ("text/html", DIRECTORY.encode()),
+    "/": ("text/html", HOMEPAGE.encode()),
+    "/departments": ("text/html", b"<html><body><ul><li><a href='/dept/chemistry'>Chemistry</a></li></ul></body></html>"),
+    "/dept/chemistry": ("text/html", DEPT_CHEM.encode()),
+    "/dept/chemistry/faculty": ("text/html", DIRECTORY.encode()),
+    "/dept/chemistry/research": ("text/html", b"<html><body><p>Research areas.</p></body></html>"),
+    "/dept/chemistry/students": ("text/html", b"<html><body><p>Students list.</p></body></html>"),
+    "/dept/physics": ("text/html", b"<html><body><h1>Physics</h1><a href='/dept/physics/faculty'>Faculty</a></body></html>"),
+    "/dept/physics/faculty": ("text/html", b"<html><body><div class='p'><h3>Dr. A B</h3><p>Professor</p></div><div class='p'><h3>Dr. C D</h3><p>Professor</p></div><div class='p'><h3>Dr. E F</h3><p>Professor</p></div></body></html>"),
+    "/dept/mems": ("text/html", DEPT_MEMS.encode()),
+    "/dept/mems/people": ("text/html", MEMS_PEOPLE.encode()),
     "/people/asha-rao": ("text/html", PROFILE.encode()),
     "/lab/": ("text/html", LAB_HOME.encode()),
     "/lab/facilities.html": ("text/html", LAB_FACILITIES.encode()),
@@ -205,7 +241,26 @@ def main() -> int:
     pt = " || ".join(p.get("snippets", []))
     check("PDF: CorrTest CS350M found", "CS350M" in pt, pt)
     check("PDF: PGSTAT204 found", "PGSTAT204" in pt, pt)
+    check("HTML: author-block emails returned", "asha.rao@fake-iit.test" in h.get("emails", []), str(h.get("emails")))
     check("no errors", not r.get("errors"), json.dumps(r.get("errors")))
+
+    print("\n/scrape/find-faculty-pages — homepage → department → faculty listing (two hops)")
+    r = post("http://localhost:8000/scrape/find-faculty-pages", {
+        "job_id": "t5",
+        "institutions": [{"name": "Fake IIT", "homepage_url": f"{BASE}/"}],
+        "department_hints": ["chemistry", "metallurg", "material", "biolog"],
+        "max_probes_per_institution": 20, "timeout_sec_per_page": 10,
+    })
+    res = (r.get("results") or [{}])[0]
+    pages = {pg["url"]: pg for pg in res.get("pages", [])}
+    check("no error for the institute", not res.get("error"), str(res))
+    chem = pages.get(f"{BASE}/dept/chemistry/faculty")
+    check("found the chemistry faculty page two hops down", chem is not None, str(list(pages)))
+    check("chemistry page attributed to the chemistry department", bool(chem) and chem.get("department") == "chemistry", str(chem))
+    check("chemistry page reached on hop 2 with 4 people", bool(chem) and chem.get("hop") == 2 and chem.get("people") == 4, str(chem))
+    mems = pages.get(f"{BASE}/dept/mems/people")
+    check("found the MEMS people page via the 'metallurg' hint", mems is not None and mems.get("department") in ("metallurg", "material"), str(mems))
+    check("physics faculty page NOT followed (no hint)", f"{BASE}/dept/physics/faculty" not in pages, str(list(pages)))
 
     print("\n/scrape/affiliation — registries + directory")
     r = post("http://localhost:8000/scrape/affiliation", {

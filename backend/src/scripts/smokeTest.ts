@@ -1387,6 +1387,10 @@ async function main(): Promise<void> {
     );
   });
 
+  // --- Faculty roster -------------------------------------------------------
+  const { runRosterTests } = await import('./rosterTests.js');
+  await runRosterTests(check, request);
+
   // --- Teardown -----------------------------------------------------------
   server.close();
   await disconnectDatabase();

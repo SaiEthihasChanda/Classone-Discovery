@@ -5,11 +5,13 @@ import { LeadDetailPage } from './features/leads/LeadDetailPage';
 import { NewLeadPage } from './features/leads/NewLeadPage';
 import { CatalogPage } from './features/catalog/CatalogPage';
 import { DiscoveryPage } from './features/discovery/DiscoveryPage';
+import { FacultyPage } from './features/faculty/FacultyPage';
 import { ReviewQueuePage } from './features/review/ReviewQueuePage';
 import { SettingsPage } from './features/settings/SettingsPage';
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard' },
+  { to: '/faculty', label: 'Faculty' },
   { to: '/discovery', label: 'Discovery' },
   { to: '/review', label: 'Review Queue' },
   { to: '/leads', label: 'Leads / CRM' },
@@ -47,6 +49,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/faculty" element={<FacultyPage />} />
           <Route path="/discovery" element={<DiscoveryPage />} />
           <Route path="/review" element={<ReviewQueuePage />} />
           <Route path="/leads" element={<LeadsPage />} />

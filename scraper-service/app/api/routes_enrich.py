@@ -6,6 +6,7 @@ the same way the discovery scrapers behave.
 """
 
 import asyncio
+import re
 
 from fastapi import APIRouter
 
@@ -35,6 +36,8 @@ from ..scrapers.paper_text import fetch_paper, methods_section
 from ..scrapers.registries import search_registry
 from ..scrapers.static_fetcher import FetchError, fetch_page
 from ..scrapers.tiered_fetcher import fetch_with_escalation
+
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
 router = APIRouter(prefix="/scrape", tags=["enrich"])
 
@@ -212,6 +215,9 @@ async def paper_text(request: PaperTextRequest) -> PaperTextResponse:
                 kind=kind,
                 chars=len(text),
                 snippets=extract_snippets(section, request.instrument_terms, max_snippets=20),
+                # The author block is at the top; a paper's reference list is
+                # full of other people's addresses, so only the head is read.
+                emails=sorted(set(EMAIL_RE.findall(text[:8000])))[:10],
             )
         )
 

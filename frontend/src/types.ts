@@ -172,3 +172,97 @@ export interface Paginated<T> {
   limit: number;
   skip: number;
 }
+
+// ---------------------------------------------------------------------------
+// Faculty roster
+// ---------------------------------------------------------------------------
+
+export type FacultyDomain =
+  | 'chemistry'
+  | 'biology'
+  | 'biotechnology'
+  | 'chemical_engineering'
+  | 'biochemical_engineering'
+  | 'materials'
+  | 'energy'
+  | 'civil'
+  | 'mechanical'
+  | 'other';
+
+export type FacultyRoleCategory = 'professor' | 'scientist' | 'officer' | 'fellow' | 'inferred' | 'unknown' | 'excluded';
+export type FacultyStatus = 'eligible' | 'excluded' | 'promoted';
+
+export interface FacultyMember {
+  id: string;
+  status: FacultyStatus;
+  exclusionReason?: string;
+  person: {
+    name: string;
+    email?: string;
+    title?: string;
+    phone?: string;
+    websiteUrl?: string;
+    profileUrl?: string;
+    orcid?: string;
+    openAlexAuthorId?: string;
+  };
+  role: { category: FacultyRoleCategory; rawTitle?: string; basis?: string };
+  department: { name?: string; domain: FacultyDomain; gateTerms?: string[] };
+  institution: {
+    name?: string;
+    openAlexId?: string;
+    discoveredName?: string;
+    discoveredOpenAlexId?: string;
+    department?: string;
+    country?: string;
+    outsideTarget?: boolean;
+    affiliation?: LeadAffiliation;
+  };
+  sources: Array<{ type: string; recordId: string; url?: string; title?: string; department?: string; seenAt: string }>;
+  research: {
+    topics: string[];
+    worksCount?: number;
+    hIndex?: number;
+    firstPublicationYear?: number;
+    lastPublicationYear?: number;
+    recentPublications: Array<{ title: string; year?: number; url?: string }>;
+    evidenceText?: string;
+    instruments: LeadInstrument[];
+  };
+  relevance: { score?: number; reasoning?: string; recommendedProductIds?: string[]; scoredAt?: string; scoringModel?: string };
+  leadId?: string;
+  promotedAt?: string;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RosterSummary {
+  total: number;
+  byStatus: Record<string, number>;
+  byRole: Record<string, number>;
+  byDomain: Record<string, number>;
+  byInstitution: Array<{ name: string; eligible: number; promoted: number; excluded: number }>;
+}
+
+export interface RosterConfig {
+  institutions: Array<{ id: string; name: string; kind: string }>;
+  domains: Record<FacultyDomain, string>;
+  defaultThreshold: number;
+}
+
+export type RosterJobKind = 'roster_build' | 'roster_verify' | 'roster_score' | 'roster_promote' | 'roster_fill';
+
+export interface RosterJob {
+  id: string;
+  kind: RosterJobKind;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  counters: Record<string, number>;
+  stage: string;
+  progress?: number;
+  log: Array<{ at: string; message: string; level: 'info' | 'warn' | 'error' }>;
+  result?: unknown;
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+}

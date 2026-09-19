@@ -222,6 +222,10 @@ class PaperTextResult(BaseModel):
     kind: str  # "pdf" | "html"
     chars: int
     snippets: list[str] = Field(default_factory=list)
+    # Addresses printed in the author block — the corresponding author's email
+    # is often the only published one for a researcher. Node picks the one
+    # that echoes the lead's name.
+    emails: list[str] = Field(default_factory=list)
 
 
 class PaperTextResponse(BaseModel):
@@ -271,3 +275,44 @@ class AffiliationResponse(BaseModel):
     directory_url: Optional[str] = None
     hits: list[AffiliationHit] = Field(default_factory=list)
     errors: list[ScrapeError] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Faculty-page discovery for the roster build
+# ---------------------------------------------------------------------------
+
+
+class InstitutionRoot(BaseModel):
+    name: str
+    homepage_url: str
+
+
+class FindFacultyPagesRequest(BaseModel):
+    job_id: str
+    institutions: list[InstitutionRoot]
+    # Department name fragments to follow: "chem", "bio", "material", ...
+    department_hints: list[str] = Field(default_factory=list)
+    max_probes_per_institution: int = Field(default=30, ge=1, le=80)
+    timeout_sec_per_page: int = Field(default=20, ge=1, le=120)
+
+
+class FoundFacultyPage(BaseModel):
+    url: str
+    department: Optional[str] = None
+    people: int = 0
+    emails: int = 0
+    profiles: int = 0
+    sample: list[str] = Field(default_factory=list)
+    hop: int = 1
+
+
+class FindFacultyPagesResult(BaseModel):
+    institution: str
+    pages: list[FoundFacultyPage] = Field(default_factory=list)
+    error: Optional[str] = None
+    detail: Optional[str] = None
+
+
+class FindFacultyPagesResponse(BaseModel):
+    job_id: str
+    results: list[FindFacultyPagesResult] = Field(default_factory=list)

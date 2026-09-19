@@ -11,6 +11,10 @@ from fastapi import APIRouter
 
 from ..core.schemas import (
     FacultyScrapeRequest,
+    FindFacultyPagesRequest,
+    FindFacultyPagesResponse,
+    FindFacultyPagesResult,
+    FoundFacultyPage,
     FacultyScrapeResponse,
     FacultyScrapeResult,
     NewsScrapeRequest,
@@ -33,6 +37,7 @@ from ..scrapers.news_scraper import (
     parse_news_html,
 )
 from ..scrapers.static_fetcher import FetchError, fetch_page
+from ..scrapers.target_finder import find_department_faculty_pages
 from ..scrapers.tiered_fetcher import fetch_with_escalation
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
@@ -189,3 +194,34 @@ async def scrape_news(request: NewsScrapeRequest) -> NewsScrapeResponse:
         results=results,
         errors=errors,
     )
+
+
+@router.post("/find-faculty-pages", response_model=FindFacultyPagesResponse)
+async def find_faculty_pages_endpoint(request: FindFacultyPagesRequest) -> FindFacultyPagesResponse:
+    """Locates department faculty listings from each institute's homepage.
+
+    Backs the roster build: Node knows the 72 institutes and their homepages
+    (from OpenAlex) but not where each one keeps its chemistry or materials
+    faculty list. Institutes run concurrently; the per-domain delay still
+    serialises fetches within one site.
+    """
+    out = FindFacultyPagesResponse(job_id=request.job_id)
+
+    async def one(inst) -> None:
+        pages = await find_department_faculty_pages(
+            inst.homepage_url,
+            request.department_hints,
+            max_probes=request.max_probes_per_institution,
+            timeout_sec=request.timeout_sec_per_page,
+        )
+        if pages and "error" in pages[0]:
+            out.results.append(
+                FindFacultyPagesResult(institution=inst.name, error=pages[0]["error"], detail=pages[0].get("detail"))
+            )
+            return
+        out.results.append(
+            FindFacultyPagesResult(institution=inst.name, pages=[FoundFacultyPage(**p) for p in pages])
+        )
+
+    await asyncio.gather(*(one(i) for i in request.institutions))
+    return out

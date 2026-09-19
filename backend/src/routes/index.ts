@@ -8,6 +8,7 @@ import { dashboardRouter } from './dashboard.routes.js';
 import { discoveryRouter } from './discovery.routes.js';
 import { settingsRouter } from './settings.routes.js';
 import { adminRouter } from './admin.routes.js';
+import { rosterRouter } from './roster.routes.js';
 
 export const apiRouter = Router();
 
@@ -48,3 +49,4 @@ apiRouter.use('/dashboard', dashboardRouter);
 apiRouter.use('/discovery', discoveryRouter);
 apiRouter.use('/settings', settingsRouter);
 apiRouter.use('/admin', adminRouter);
+apiRouter.use('/roster', rosterRouter);

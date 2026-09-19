@@ -8,6 +8,7 @@
 import { env } from '../config/env.js';
 import { MongoActivityLogRepository } from './mongo/activityLog.repository.js';
 import { MongoEmailThreadRepository } from './mongo/emailThread.repository.js';
+import { MongoFacultyMemberRepository } from './mongo/facultyMember.repository.js';
 import { MongoLeadRepository } from './mongo/lead.repository.js';
 import { MongoProductRepository } from './mongo/productCatalog.repository.js';
 
@@ -16,6 +17,7 @@ export interface RepositoryBundle {
   threads: MongoEmailThreadRepository;
   activity: MongoActivityLogRepository;
   products: MongoProductRepository;
+  faculty: MongoFacultyMemberRepository;
 }
 
 function buildRepositories(): RepositoryBundle {
@@ -26,6 +28,7 @@ function buildRepositories(): RepositoryBundle {
         threads: new MongoEmailThreadRepository(),
         activity: new MongoActivityLogRepository(),
         products: new MongoProductRepository(),
+        faculty: new MongoFacultyMemberRepository(),
       };
     case 'firestore':
       // Planned migration target. Implement `repositories/firestore/*` against

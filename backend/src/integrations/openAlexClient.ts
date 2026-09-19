@@ -730,3 +730,220 @@ export async function findAuthorByName(
       };
     });
 }
+
+// ---------------------------------------------------------------------------
+// Roster building: an institute's authors, and one author's recent output
+// ---------------------------------------------------------------------------
+
+export interface InstitutionProfile {
+  id: string;
+  name: string;
+  ror?: string;
+  homepageUrl?: string;
+  /** "IITB", "IIT Bombay" and the like — extra names for the ORCID search. */
+  acronyms: string[];
+  alternatives: string[];
+}
+
+/** The institution record: ROR id, homepage and alternative names. A free single-record lookup. */
+export async function getInstitutionProfile(institutionId: string): Promise<InstitutionProfile | null> {
+  const id = institutionId.split('/').pop()!;
+  const url = new URL(`${BASE_URL}/institutions/${id}`);
+  url.searchParams.set('select', 'id,display_name,ror,homepage_url,display_name_acronyms,display_name_alternatives');
+  if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
+  interface Response {
+    id?: string;
+    display_name?: string;
+    ror?: string;
+    homepage_url?: string;
+    display_name_acronyms?: string[];
+    display_name_alternatives?: string[];
+  }
+  let data: Response;
+  try {
+    data = await fetchOpenAlex<Response>(url.toString(), 0);
+  } catch {
+    return null;
+  }
+  if (!data.id || !data.display_name) return null;
+  return {
+    id,
+    name: data.display_name,
+    ror: data.ror ?? undefined,
+    homepageUrl: data.homepage_url ?? undefined,
+    acronyms: data.display_name_acronyms ?? [],
+    alternatives: data.display_name_alternatives ?? [],
+  };
+}
+
+export interface InstitutionAuthor {
+  id: string;
+  name: string;
+  orcid?: string;
+  worksCount: number;
+  hIndex?: number;
+  /** Years the author has published from this institute, from `affiliations`. */
+  yearsHere: number[];
+  firstPublicationYear?: number;
+  lastPublicationYear?: number;
+  topics: Array<{ name: string; count: number; subfield?: string; field?: string }>;
+  lastKnown: Array<{ id: string; name: string; lineage?: string[] }>;
+}
+
+/**
+ * Every author whose last known institution is the given one, above a works
+ * floor. Cursor-paged at 200 per call; each page is a filter-only call (1
+ * credit), so a large IIT costs on the order of 20 credits. This is the roster
+ * source that catches researchers with no ORCID and no scrapeable page.
+ */
+export async function listInstitutionAuthors(params: {
+  institutionId: string;
+  minWorks?: number;
+  onPage?: (fetched: number, total: number) => void;
+  limit?: number;
+}): Promise<{ authors: InstitutionAuthor[]; total: number }> {
+  const id = params.institutionId.split('/').pop()!;
+  const minWorks = params.minWorks ?? 5;
+
+  interface AuthorRecord {
+    id?: string;
+    display_name?: string;
+    orcid?: string;
+    works_count?: number;
+    summary_stats?: { h_index?: number };
+    affiliations?: Array<{ institution?: { id?: string }; years?: number[] }>;
+    last_known_institutions?: Array<{ id?: string; display_name?: string; lineage?: string[] }>;
+    topics?: Array<{
+      display_name?: string;
+      count?: number;
+      subfield?: { display_name?: string };
+      field?: { display_name?: string };
+    }>;
+  }
+  interface Response {
+    meta?: { count?: number; next_cursor?: string | null };
+    results?: AuthorRecord[];
+  }
+
+  const authors: InstitutionAuthor[] = [];
+  let total = 0;
+  let cursor: string | null = '*';
+  const short = (v?: string) => (v ?? '').split('/').pop() ?? '';
+
+  while (cursor) {
+    const url = new URL(`${BASE_URL}/authors`);
+    url.searchParams.set('filter', `last_known_institutions.id:${id},works_count:>${minWorks - 1}`);
+    url.searchParams.set('per-page', String(MAX_PAGE_SIZE));
+    url.searchParams.set('cursor', cursor);
+    url.searchParams.set(
+      'select',
+      'id,display_name,orcid,works_count,summary_stats,affiliations,last_known_institutions,topics',
+    );
+    if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
+
+    const page: Response = await fetchOpenAlex<Response>(url.toString());
+    total = page.meta?.count ?? total;
+    for (const a of page.results ?? []) {
+      if (!a.id || !a.display_name) continue;
+      const years = (a.affiliations ?? [])
+        .flatMap((x) => x.years ?? [])
+        .filter((y) => typeof y === 'number');
+      const here = (a.affiliations ?? [])
+        .filter((x) => short(x.institution?.id) === id)
+        .flatMap((x) => x.years ?? []);
+      authors.push({
+        id: short(a.id),
+        name: a.display_name,
+        orcid: a.orcid?.replace('https://orcid.org/', ''),
+        worksCount: a.works_count ?? 0,
+        hIndex: a.summary_stats?.h_index,
+        yearsHere: here.sort((x, y) => y - x),
+        firstPublicationYear: years.length ? Math.min(...years) : undefined,
+        lastPublicationYear: years.length ? Math.max(...years) : undefined,
+        topics: (a.topics ?? [])
+          .filter((t) => t.display_name)
+          .map((t) => ({
+            name: t.display_name!,
+            count: t.count ?? 0,
+            subfield: t.subfield?.display_name,
+            field: t.field?.display_name,
+          })),
+        lastKnown: (a.last_known_institutions ?? [])
+          .filter((i) => i.id && i.display_name)
+          .map((i) => ({ id: short(i.id), name: i.display_name!, lineage: (i.lineage ?? []).map(short) })),
+      });
+      if (params.limit && authors.length >= params.limit) break;
+    }
+    params.onPage?.(authors.length, total);
+    if (params.limit && authors.length >= params.limit) break;
+    cursor = page.meta?.next_cursor ?? null;
+    if ((page.results ?? []).length === 0) break;
+  }
+
+  return { authors, total };
+}
+
+export interface AuthorRecentWorks {
+  publications: LeadPublication[];
+  topics: string[];
+  /** Titles plus the first few abstracts — what the relevance scorer reads. */
+  evidenceText: string;
+}
+
+/**
+ * One author's recent papers with abstracts and topics — a single filter-only
+ * call (1 credit). Backs the roster relevance pass, where thousands of people
+ * are scored and a 10-credit search per person would be unaffordable.
+ */
+export async function getAuthorRecentWorks(params: {
+  authorId: string;
+  sinceYear: number;
+  maxWorks?: number;
+}): Promise<AuthorRecentWorks> {
+  const id = params.authorId.split('/').pop()!;
+  const url = new URL(`${BASE_URL}/works`);
+  url.searchParams.set(
+    'filter',
+    [`authorships.author.id:${id}`, `publication_year:>${params.sinceYear - 1}`, 'is_paratext:false'].join(','),
+  );
+  url.searchParams.set('per-page', String(Math.min(params.maxWorks ?? 25, MAX_PAGE_SIZE)));
+  url.searchParams.set('sort', 'publication_year:desc');
+  url.searchParams.set('select', 'id,doi,title,publication_year,topics,abstract_inverted_index');
+  if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
+
+  const data = await fetchOpenAlex<OpenAlexResponse>(url.toString());
+  const works = (data.results ?? []).filter((w) => w.title);
+  const publications = works.map((w) => ({
+    title: w.title!,
+    year: w.publication_year,
+    url: w.doi ?? w.id,
+    sourceId: w.id,
+  }));
+  const topicCounts = new Map<string, number>();
+  for (const w of works) {
+    for (const t of w.topics ?? []) {
+      if (t.display_name) topicCounts.set(t.display_name, (topicCounts.get(t.display_name) ?? 0) + 1);
+    }
+  }
+  const topics = [...topicCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([t]) => t)
+    .slice(0, 10);
+  const abstracts = works
+    .slice(0, 4)
+    .map((w) => reconstructAbstract(w.abstract_inverted_index))
+    .filter(Boolean)
+    .join(' ');
+  return {
+    publications,
+    topics,
+    evidenceText: [
+      topics.length ? `Research topics: ${topics.join(', ')}.` : '',
+      publications.length ? `Recent work: ${publications.map((p) => p.title).join('; ')}.` : '',
+      abstracts,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .slice(0, 3000),
+  };
+}

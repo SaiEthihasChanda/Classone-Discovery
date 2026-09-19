@@ -7,6 +7,11 @@
  */
 import type {
   DashboardData,
+  FacultyMember,
+  RosterConfig,
+  RosterJob,
+  RosterJobKind,
+  RosterSummary,
   InstrumentVendor,
   Lead,
   LeadDetail,
@@ -266,7 +271,63 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ confirm: 'WIPE' }),
     }),
+
+  // --- Faculty roster --------------------------------------------------------
+  rosterConfig: () => request<RosterConfig>('/roster/config'),
+  rosterSummary: () => request<RosterSummary>('/roster/summary'),
+  listRoster: (params: RosterListParams = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '' && v !== null) q.set(k, String(v));
+    return request<Paginated<FacultyMember> & { page: number }>(`/roster?${q.toString()}`);
+  },
+  rosterExportUrl: (params: RosterListParams = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '' && v !== null && k !== 'page' && k !== 'limit') q.set(k, String(v));
+    return `${BASE_URL}/roster/export.csv?${q.toString()}`;
+  },
+  getRosterMember: (id: string) => request<{ member: FacultyMember }>(`/roster/${id}`),
+  setRosterStatus: (id: string, status: 'eligible' | 'excluded', reason?: string) =>
+    request<{ member: FacultyMember }>(`/roster/${id}`, { method: 'PATCH', body: JSON.stringify({ status, reason }) }),
+  rosterBuild: (payload: { institutionIds: string[]; sources?: string[]; includeInferredRoles?: boolean; minWorks?: number; maxProbesPerInstitution?: number }) =>
+    request<{ job: RosterJob }>('/roster/build', { method: 'POST', body: JSON.stringify(payload) }),
+  rosterVerify: (payload: { freshDays?: number } = {}) =>
+    request<{ job: RosterJob }>('/roster/verify', { method: 'POST', body: JSON.stringify(payload) }),
+  rosterScoreEstimate: (rescore = false) =>
+    request<{ members: number; withOpenAlex: number; credits: number }>(`/roster/score/estimate?rescore=${rescore}`),
+  rosterScore: (payload: { rescore?: boolean; sinceYears?: number } = {}) =>
+    request<{ job: RosterJob }>('/roster/score', { method: 'POST', body: JSON.stringify(payload) }),
+  rosterPromoteEstimate: (threshold: number) =>
+    request<{ candidates: number; withOpenAlex: number; scanCreditsPerLead: { min: number; max: number } }>(`/roster/promote/estimate?threshold=${threshold}`),
+  rosterPromote: (payload: { threshold?: number; identifyInstruments?: boolean } = {}) =>
+    request<{ job: RosterJob }>('/roster/promote', { method: 'POST', body: JSON.stringify(payload) }),
+  rosterFill: (payload: { useScraper?: boolean } = {}) =>
+    request<{ job: RosterJob }>('/roster/fill', { method: 'POST', body: JSON.stringify(payload) }),
+  rosterJobs: (kind?: RosterJobKind) => request<{ jobs: RosterJob[] }>(`/roster/jobs${kind ? `?kind=${kind}` : ''}`),
+  rosterJob: (id: string) => request<RosterJob>(`/roster/jobs/${id}`),
+  cancelRosterJob: (id: string) => request<{ ok: boolean }>(`/roster/jobs/${id}/cancel`, { method: 'POST' }),
+  rosterImport: (csv: string, source: 'vidwan_import' | 'manual' = 'vidwan_import') =>
+    request<{ rows: number; unknownInstitution: number; created: number; updated: number; excludedRole: number; excludedDomain: number; droppedUnconfirmed: number }>(
+      '/roster/import',
+      { method: 'POST', body: JSON.stringify({ csv, source }) },
+    ),
+  wipeRoster: () => request<{ deleted: number }>('/roster', { method: 'DELETE', body: JSON.stringify({ confirm: 'WIPE ROSTER' }) }),
 };
+
+export interface RosterListParams {
+  status?: string;
+  domain?: string;
+  role?: string;
+  institutionId?: string;
+  affiliation?: string;
+  tag?: string;
+  minScore?: number;
+  scored?: 'yes' | 'no';
+  missing?: string;
+  q?: string;
+  sort?: 'score' | 'name' | 'newest';
+  page?: number;
+  limit?: number;
+}
 
 export interface WebEnrichmentResult {
   lead: Lead;

@@ -21,7 +21,9 @@ export type LeadSourceType =
   | 'university_news'
   | 'grant_portal'
   | 'manual'
-  | 'manual_discovery_trigger';
+  | 'manual_discovery_trigger'
+  /** Promoted from the faculty roster (see `FacultyMember`). */
+  | 'faculty_roster';
 
 /**
  * Lifecycle of a lead.
@@ -349,3 +351,108 @@ export interface Product {
 }
 
 export type ProductCreateInput = Omit<Product, 'id' | 'createdAt' | 'updatedAt'>;
+
+// ---------------------------------------------------------------------------
+// Faculty roster — every professor/scientist at a target institute, before
+// any relevance judgement. Leads are PROMOTED from here; students never enter.
+// ---------------------------------------------------------------------------
+
+/** Research domains the roster keeps. Anything else is dropped at build time. */
+export type FacultyDomain =
+  | 'chemistry'
+  | 'biology'
+  | 'biotechnology'
+  | 'chemical_engineering'
+  | 'biochemical_engineering'
+  | 'materials'
+  | 'energy'
+  | 'civil'
+  | 'mechanical'
+  | 'other';
+
+/**
+ * What kind of position the person holds, from their title.
+ *
+ * `inferred` means no title was available (an OpenAlex-only record) and the
+ * publication history reads as an established researcher; it is kept but
+ * tagged so it can be filtered out. `excluded` is a student, postdoc or
+ * adjunct/visiting role — recorded so a re-run does not re-evaluate them, but
+ * never shown as faculty.
+ */
+export type FacultyRoleCategory = 'professor' | 'scientist' | 'officer' | 'fellow' | 'inferred' | 'unknown' | 'excluded';
+
+export type FacultySourceType = 'orcid' | 'openalex' | 'faculty_page' | 'vidwan_import' | 'manual';
+
+export interface FacultySource {
+  type: FacultySourceType;
+  /** Stable id in that source: ORCID iD, OpenAlex author id, profile URL. */
+  recordId: string;
+  url?: string;
+  /** What that source said their title/department were, verbatim. */
+  title?: string;
+  department?: string;
+  seenAt: Date;
+}
+
+export type FacultyStatus = 'eligible' | 'excluded' | 'promoted';
+
+export interface FacultyMember {
+  id: string;
+  status: FacultyStatus;
+  /** Why an excluded member is excluded ("role: PhD student", "domain: physics"). */
+  exclusionReason?: string;
+  person: {
+    name: string;
+    normalizedNameKey: string;
+    email?: string;
+    title?: string;
+    phone?: string;
+    websiteUrl?: string;
+    profileUrl?: string;
+    orcid?: string;
+    openAlexAuthorId?: string;
+  };
+  role: {
+    category: FacultyRoleCategory;
+    rawTitle?: string;
+    /** For `inferred`: the numbers the inference rested on. */
+    basis?: string;
+  };
+  department: {
+    name?: string;
+    domain: FacultyDomain;
+    /** Corrosion terms that let a civil/mechanical member through the gate. */
+    gateTerms?: string[];
+  };
+  institution: LeadInstitution & {
+    /** Verified to have moved somewhere outside the IIT/NIT/IIIT list. */
+    outsideTarget?: boolean;
+  };
+  sources: FacultySource[];
+  research: {
+    topics: string[];
+    worksCount?: number;
+    hIndex?: number;
+    firstPublicationYear?: number;
+    lastPublicationYear?: number;
+    recentPublications: LeadPublication[];
+    /** Abstract/keyword text gathered for scoring. */
+    evidenceText?: string;
+    instruments: LeadInstrument[];
+  };
+  relevance: {
+    score?: number;
+    reasoning?: string;
+    recommendedProductIds?: string[];
+    scoredAt?: Date;
+    scoringModel?: string;
+  };
+  /** Set once promoted into the CRM. */
+  leadId?: string;
+  promotedAt?: Date;
+  tags: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type FacultyMemberCreateInput = Omit<FacultyMember, 'id' | 'createdAt' | 'updatedAt'>;

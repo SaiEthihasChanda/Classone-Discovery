@@ -59,6 +59,7 @@ const leadSchema = new Schema(
           'grant_portal',
           'manual',
           'manual_discovery_trigger',
+          'faculty_roster',
         ],
         required: true,
       },

@@ -76,11 +76,19 @@ const SCRAPE_TIMEOUT_MS = 240_000;
 
 export async function scrapeFacultyPages(
   targets: FacultyTarget[],
-  options: { maxPagesPerTarget?: number; timeoutSecPerPage?: number } = {},
+  options: {
+    maxPagesPerTarget?: number;
+    timeoutSecPerPage?: number;
+    /** Fetch profile pages for people whose index entry has no email. */
+    followProfiles?: boolean;
+    maxProfileFetches?: number;
+    allowBrowser?: boolean;
+    timeoutMs?: number;
+  } = {},
 ): Promise<FacultyScrapeResponse> {
   return fetchJson<FacultyScrapeResponse>(`${env.SCRAPER_SERVICE_URL}/scrape/faculty`, {
     method: 'POST',
-    timeoutMs: SCRAPE_TIMEOUT_MS,
+    timeoutMs: options.timeoutMs ?? SCRAPE_TIMEOUT_MS,
     retries: 0,
     body: {
       job_id: randomUUID(),
@@ -89,6 +97,9 @@ export async function scrapeFacultyPages(
         max_pages_per_target: options.maxPagesPerTarget ?? 5,
         respect_robots_txt: true,
         timeout_sec_per_page: options.timeoutSecPerPage ?? 20,
+        ...(options.followProfiles === undefined ? {} : { follow_profiles: options.followProfiles }),
+        ...(options.maxProfileFetches === undefined ? {} : { max_profile_fetches: options.maxProfileFetches }),
+        ...(options.allowBrowser === undefined ? {} : { allow_browser: options.allowBrowser }),
       },
     },
   });
@@ -245,7 +256,7 @@ export async function checkAffiliationViaScraper(payload: {
 
 export interface PaperTextResponse {
   job_id: string;
-  results: Array<{ id: string; url: string; kind: 'pdf' | 'html'; chars: number; snippets: string[] }>;
+  results: Array<{ id: string; url: string; kind: 'pdf' | 'html'; chars: number; snippets: string[]; emails?: string[] }>;
   errors: ScrapeError[];
 }
 
@@ -263,6 +274,53 @@ export async function extractPaperSnippets(payload: {
       papers: payload.papers,
       instrument_terms: payload.instrumentTerms,
       timeout_sec_per_page: payload.timeoutSecPerPage ?? 30,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Faculty-page discovery for the roster build
+// ---------------------------------------------------------------------------
+
+export interface FoundFacultyPage {
+  url: string;
+  department?: string | null;
+  people: number;
+  emails: number;
+  profiles: number;
+  sample: string[];
+  hop: number;
+}
+
+export interface FindFacultyPagesResponse {
+  job_id: string;
+  results: Array<{ institution: string; pages: FoundFacultyPage[]; error?: string | null; detail?: string | null }>;
+}
+
+/** Long: up to `maxProbes` rate-limited fetches per institute, all institutes in parallel. */
+const FIND_PAGES_TIMEOUT_MS = 900_000;
+
+/**
+ * Asks the scraper to locate the department faculty listings of each
+ * institute from its homepage. `departmentHints` are the name fragments to
+ * follow ("chem", "material", ...).
+ */
+export async function findFacultyPages(payload: {
+  institutions: Array<{ name: string; homepageUrl: string }>;
+  departmentHints: string[];
+  maxProbes?: number;
+  timeoutSecPerPage?: number;
+}): Promise<FindFacultyPagesResponse> {
+  return fetchJson<FindFacultyPagesResponse>(`${env.SCRAPER_SERVICE_URL}/scrape/find-faculty-pages`, {
+    method: 'POST',
+    timeoutMs: FIND_PAGES_TIMEOUT_MS,
+    retries: 0,
+    body: {
+      job_id: randomUUID(),
+      institutions: payload.institutions.map((i) => ({ name: i.name, homepage_url: i.homepageUrl })),
+      department_hints: payload.departmentHints,
+      max_probes_per_institution: payload.maxProbes ?? 30,
+      timeout_sec_per_page: payload.timeoutSecPerPage ?? 20,
     },
   });
 }

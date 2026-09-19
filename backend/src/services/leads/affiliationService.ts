@@ -40,7 +40,7 @@ import { expandInstitutionAbbreviations, normalizeInstitutionKey } from '../../u
 import { logActivity } from '../activity/activityService.js';
 
 /** Comparison key with short forms expanded first. */
-const instKey = (name?: string) =>
+export const instKey = (name?: string) =>
   name ? normalizeInstitutionKey(expandInstitutionAbbreviations(name)) : undefined;
 
 /** How long a verification stays fresh before a run re-checks a known lead. */
@@ -54,7 +54,7 @@ export interface AffiliationAssessment {
 }
 
 /** True if the OpenAlex institution is the one on the lead, by id or by name. */
-function sameInstitution(
+export function sameInstitution(
   lead: { name?: string; openAlexId?: string },
   inst: { id?: string; name?: string; lineage?: string[] },
 ): boolean {

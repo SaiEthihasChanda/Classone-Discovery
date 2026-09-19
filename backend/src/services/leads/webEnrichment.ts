@@ -60,6 +60,43 @@ export interface WebEnrichmentResult {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Role addresses that belong to an office, never a person. */
+const GENERIC_EMAIL_PREFIXES = [
+  'registrar', 'hod', 'head', 'office', 'admin', 'info', 'enquir', 'contact', 'webmaster', 'dean', 'director',
+  'principal', 'secretary', 'support', 'help', 'noreply', 'no-reply', 'postmaster', 'library', 'accounts', 'admission',
+  'placement', 'chairman', 'convenor', 'coordinator', 'department', 'dept', 'editor', 'journal', 'permissions',
+];
+
+/**
+ * The address most likely to be this person's, from a list printed on a page
+ * or in a paper's author block. Prefers the one whose local part echoes the
+ * surname; returns nothing rather than a co-author's address.
+ */
+export function pickPersonalEmail(addresses: string[], name: string): string | undefined {
+  const tokens = name
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !['dr', 'prof', 'mr', 'ms', 'mrs'].includes(t));
+  const surname = tokens[tokens.length - 1] ?? '';
+  const first = tokens[0] ?? '';
+  let best: { score: number; address: string } | undefined;
+  for (const raw of new Set(addresses.map((a) => a.toLowerCase().trim()))) {
+    if (!EMAIL_RE.test(raw)) continue;
+    const local = raw.split('@')[0]!;
+    if (GENERIC_EMAIL_PREFIXES.some((p) => local.startsWith(p))) continue;
+    const alnum = local.replace(/[^a-z0-9]/g, '');
+    let score = 0;
+    if (surname.length >= 3 && alnum.includes(surname)) score += 10;
+    for (const t of tokens) if (t.length >= 3 && alnum.includes(t)) score += 3;
+    if (first && surname && alnum.startsWith(first[0] + surname)) score += 6;
+    if (score > 0 && (!best || score > best.score || (score === best.score && raw.length < best.address.length))) {
+      best = { score, address: raw };
+    }
+  }
+  return best?.address;
+}
+
 /** An institute profile URL is one we scraped; an OpenAlex author URL is not a page about them. */
 function institutePageUrl(lead: Lead): string | undefined {
   const url = lead.person.profileUrl;
@@ -153,6 +190,7 @@ export async function enrichLeadFromWeb(
 
   // --- 3. Open-access papers → Methods section ----------------------------
   const papers = { considered: 0, openAccess: 0, read: 0 };
+  const paperEmails: string[] = [];
   if (scraping.readOpenAccessPapers) {
     const candidates = lead.research.recentPublications
       .filter((p) => p.sourceId)
@@ -189,6 +227,7 @@ export async function enrichLeadFromWeb(
         papers.read = response.results.length;
         for (const r of response.results) {
           const title = locations.find((l) => l.workId === r.id)?.title ?? r.id;
+          paperEmails.push(...(r.emails ?? []));
           for (const text of r.snippets) {
             const hits = detectInstrumentsInText(text, brands, r.url).map((i) => ({
               ...i,
@@ -205,7 +244,9 @@ export async function enrichLeadFromWeb(
   const person: Record<string, unknown> = {};
   const institution: Record<string, unknown> = {};
 
-  const email = profile?.email?.toLowerCase();
+  // The corresponding-author address in an open-access paper is often the
+  // only one a researcher has published anywhere; it is the fallback.
+  const email = profile?.email?.toLowerCase() ?? pickPersonalEmail(paperEmails, lead.person.name);
   if (!lead.person.email && email && EMAIL_RE.test(email)) {
     person.email = email;
     filled.push('email');
