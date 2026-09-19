@@ -133,12 +133,12 @@ export function LeadDetailPage() {
     }
   }
 
-  async function verifyNow() {
+  async function verifyNow(deep = false) {
     if (!lead) return;
     setVerifying(true);
     setActionError(null);
     try {
-      const r = await api.verifyAffiliation(lead.id);
+      const r = await api.verifyAffiliation(lead.id, deep);
       setEnrichNote(
         r.assessment
           ? `Affiliation check: ${r.assessment.status === 'current' ? 'still at ' + (r.lead.institution.name ?? 'this institute') : r.assessment.status === 'moved' ? 'moved to ' + (r.lead.institution.name ?? '?') : 'current institute could not be established — cleared'}.`
@@ -371,17 +371,60 @@ export function LeadDetailPage() {
                     {lead.institution.affiliation.status === 'unknown' &&
                       `Last seen at ${lead.institution.affiliation.previousInstitution ?? '?'}${lead.institution.affiliation.lastSeenYear ? ` (${lead.institution.affiliation.lastSeenYear})` : ''}; no current institute on record`}
                     {' · '}
-                    {lead.institution.affiliation.source === 'directory' ? 'institute directory' : 'OpenAlex'},{' '}
-                    {formatDate(lead.institution.affiliation.verifiedAt)}
+                    {(
+                      { directory: 'institute directory', irins: 'IRINS', vidwan: 'Vidwan', orcid: 'ORCID', openalex: 'OpenAlex' } as Record<string, string>
+                    )[lead.institution.affiliation.source] ?? lead.institution.affiliation.source}
+                    , {formatDate(lead.institution.affiliation.verifiedAt)}
                     {lead.institution.affiliation.directoryListed === false && ' · not in the institute directory'}
                   </div>
                 )}
                 {!lead.institution.affiliation && (
                   <div className="muted small" style={{ marginTop: 4 }}>Not yet verified</div>
                 )}
-                <button className="btn btn-sm" style={{ marginTop: 6 }} onClick={verifyNow} disabled={verifying}>
-                  {verifying ? 'Checking…' : 'Verify now'}
-                </button>
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                  <button className="btn btn-sm" onClick={() => verifyNow(false)} disabled={verifying} title="OpenAlex + ORCID — free, seconds">
+                    {verifying ? 'Checking…' : 'Verify now'}
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => verifyNow(true)}
+                    disabled={verifying}
+                    title="Also asks the institute directory and the IRINS/Vidwan registries — needs the scraper service, takes a minute"
+                  >
+                    Deep check
+                  </button>
+                </div>
+                {(lead.institution.affiliation?.evidence?.length ?? 0) > 0 && (
+                  <details style={{ marginTop: 8 }}>
+                    <summary className="small muted" style={{ cursor: 'pointer' }}>
+                      What each source said ({lead.institution.affiliation!.evidence!.length})
+                    </summary>
+                    <ul className="small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                      {lead.institution.affiliation!.evidence!.map((e, i) => (
+                        <li key={`${e.source}-${i}`}>
+                          <strong>{e.source}</strong>:{' '}
+                          {e.institution ? (
+                            <>
+                              {e.institution}
+                              {e.current === true ? ' (current)' : ''}
+                            </>
+                          ) : (
+                            <span className="muted">{e.detail ?? 'nothing found'}</span>
+                          )}
+                          {e.institution && e.detail && <span className="muted"> — {e.detail}</span>}
+                          {e.url && (
+                            <>
+                              {' '}
+                              <a href={e.url} target="_blank" rel="noreferrer">
+                                source →
+                              </a>
+                            </>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
               </dd>
               <dt>Department</dt>
               <dd>{lead.institution.department ?? '—'}</dd>

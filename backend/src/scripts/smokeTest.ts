@@ -877,6 +877,131 @@ async function main(): Promise<void> {
     assert.equal(body.items[0].institution.affiliation.previousInstitution, IITB.name);
   });
 
+  console.log('\nAffiliation precedence — directory/IRINS > Vidwan > ORCID > OpenAlex:\n');
+  const { combineAffiliationEvidence } = await import('../services/leads/affiliationService.js');
+
+  const oaSaysHere = { authorId: 'A1', lastKnown: [IITB], affiliations: [{ ...IITB, years: [2025] }] };
+  const oaSaysElsewhere = { authorId: 'A1', lastKnown: [NUS], affiliations: [{ ...NUS, years: [2026] }, { ...IITB, years: [2024] }] };
+  const noReg = { job_id: 'r', directory_checked: false, directory_listed: null, directory_url: null, hits: [], errors: [] };
+
+  await check('directory listing wins over everything: current even when OpenAlex says elsewhere', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: oaSaysElsewhere,
+      orcid: { orcid: 'x', employments: [{ organization: NUS.name, current: true, startYear: 2026 }] },
+      registry: { ...noReg, directory_checked: true, directory_listed: true, directory_url: 'https://iitb/faculty' },
+    }, NOW);
+    assert.equal(a.status, 'current');
+    assert.equal(a.affiliation.source, 'directory');
+    assert.equal(a.institution.name, IITB.name);
+    assert.deepEqual(a.affiliation.evidence?.map((e) => e.source), ['directory']);
+  });
+
+  await check('IRINS/Vidwan profile naming another institute → moved there, even if OpenAlex still says here', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: oaSaysHere,
+      registry: { ...noReg, hits: [{ source: 'vidwan', profile_url: 'https://vidwan/p/1', matched_name: 'Dr. X', institution: IISC.name, designation: 'Professor' }] },
+    }, NOW);
+    assert.equal(a.status, 'moved');
+    assert.equal(a.affiliation.source, 'vidwan');
+    assert.equal(a.institution.name, IISC.name);
+    assert.equal(a.institution.openAlexId, IISC.id === 'I4210' ? undefined : a.institution.openAlexId); // not in our list → no id
+    assert.equal(a.affiliation.previousInstitution, IITB.name);
+  });
+
+  await check('a registry profile naming the SAME institute → current, by that source', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: oaSaysElsewhere,
+      registry: { ...noReg, hits: [{ source: 'irins', profile_url: 'https://iitb.irins.org/p/1', matched_name: 'Dr. X', institution: 'IIT Bombay' }] },
+    }, NOW);
+    assert.equal(a.status, 'current');
+    assert.equal(a.affiliation.source, 'irins');
+  });
+
+  await check('ORCID open employment here beats OpenAlex saying elsewhere', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: oaSaysElsewhere,
+      orcid: { orcid: 'x', employments: [{ organization: 'Indian Institute of Technology Bombay', role: 'Professor', current: true, startYear: 2018 }] },
+    }, NOW);
+    assert.equal(a.status, 'current');
+    assert.equal(a.affiliation.source, 'orcid');
+    assert.match(a.affiliation.note ?? '', /ORCID employment .* since 2018/);
+  });
+
+  await check('ORCID open employment elsewhere, started after our last paper → moved', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: { authorId: 'A1', lastKnown: [IITB], affiliations: [{ ...IITB, years: [2024] }] },
+      orcid: { orcid: 'x', employments: [{ organization: NUS.name, current: true, startYear: 2026 }, { organization: IITB.name, current: false, startYear: 2015, endYear: 2025 }] },
+    }, NOW);
+    assert.equal(a.status, 'moved');
+    assert.equal(a.affiliation.source, 'orcid');
+    assert.equal(a.institution.name, NUS.name);
+    assert.equal(a.affiliation.lastSeenYear, 2024);
+  });
+
+  await check('ORCID open employment elsewhere but OpenAlex has a NEWER paper here → ORCID is stale, stays current', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: { authorId: 'A1', lastKnown: [IITB], affiliations: [{ ...IITB, years: [2026] }] },
+      orcid: { orcid: 'x', employments: [{ organization: 'Old University', current: true, startYear: 2012 }] },
+    }, NOW);
+    assert.equal(a.status, 'current');
+    assert.equal(a.affiliation.source, 'openalex');
+    assert.ok(a.affiliation.evidence?.some((e) => e.source === 'orcid'), 'ORCID evidence should still be recorded');
+  });
+
+  await check('nothing but OpenAlex → the OpenAlex rule, with "not in directory" appended when the directory dropped them', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: oaSaysHere,
+      registry: { ...noReg, directory_checked: true, directory_listed: false, directory_url: 'https://iitb/faculty' },
+    }, NOW);
+    assert.equal(a.status, 'current');
+    assert.equal(a.affiliation.directoryListed, false);
+    assert.match(a.affiliation.note ?? '', /Not found in the institute faculty directory/);
+  });
+
+  await check('no source answers → unverified, institute kept', async () => {
+    const a = combineAffiliationEvidence(atIITB, { openalex: null, orcid: null, registry: null }, NOW);
+    assert.equal(a.status, 'unverified');
+    assert.equal(a.institution.name, IITB.name);
+  });
+
+  await check('deep verify calls the scraper and writes the registry decision', async () => {
+    const deepId = (
+      await request('/leads', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Deep Check', institutionName: IITB.name, profileUrl: 'https://openalex.org/A5000000003', orcid: '0000-0002-1825-0097' }),
+      })
+    ).body.lead.id as string;
+    let registryAsked: unknown = null;
+    const { lead, assessment } = await verifyLeadAffiliation(deepId, {
+      deep: true,
+      fetchAffiliations: async () => oaSaysHere,
+      fetchOrcid: async () => ({ orcid: '0000-0002-1825-0097', employments: [] }),
+      scraperUp: async () => true,
+      fetchRegistries: async (p) => {
+        registryAsked = p;
+        return { ...noReg, hits: [{ source: 'vidwan', profile_url: 'https://vidwan/p/9', matched_name: 'Deep Check', institution: NUS.name }] };
+      },
+    });
+    assert.equal(assessment?.status, 'moved');
+    assert.equal(lead.institution.name, NUS.name);
+    assert.equal(lead.institution.affiliation?.source, 'vidwan');
+    const asked = registryAsked as { registries: Array<{ key: string }>; knownInstitutions: string[] };
+    assert.deepEqual(asked.registries.map((r) => r.key).sort(), ['irins', 'vidwan']);
+    assert.ok(asked.knownInstitutions.length >= 70, 'known institute names should be passed for label-less profiles');
+    assert.ok(lead.institution.affiliation?.evidence?.some((e) => e.source === 'vidwan' && e.url === 'https://vidwan/p/9'));
+  });
+
+  await check('a lead with only an ORCID (no OpenAlex id) can still be verified', async () => {
+    const orcidOnlyId = (
+      await request('/leads', { method: 'POST', body: JSON.stringify({ name: 'Orcid Only', institutionName: IITB.name, orcid: '0000-0002-1825-0098' }) })
+    ).body.lead.id as string;
+    const { assessment } = await verifyLeadAffiliation(orcidOnlyId, {
+      fetchOrcid: async () => ({ orcid: '0000-0002-1825-0098', employments: [{ organization: IITB.name, current: true, startYear: 2020 }] }),
+    });
+    assert.equal(assessment?.status, 'current');
+    assert.equal(assessment?.affiliation.source, 'orcid');
+  });
+
   await check('POST /leads/verify-affiliations tallies results and skips leads without a record', async () => {
     const { status, body } = await request('/leads/verify-affiliations', {
       method: 'POST',

@@ -93,7 +93,30 @@ PAPER_PDF = _pdf_with_text(
     ]
 )
 
+REGISTRY_SEARCH = f"""<html><body><h1>Search results</h1>
+<ul>
+<li><a href="/login">Login</a></li>
+<li><a href="/registry/profile/999">Dr. Ashok Rao</a> — Chemistry</li>
+<li><a href="/registry/profile/42">Dr. Asha Rao</a> — Electrochemistry</li>
+<li><a href="https://elsewhere.test/asha">Asha Rao (offsite)</a></li>
+</ul></body></html>"""
+
+REGISTRY_PROFILE = """<html><body><h1>Dr. Asha Rao</h1>
+<table>
+<tr><th>Designation</th><td>Professor</td></tr>
+<tr><th>Department</th><td>Department of Chemistry</td></tr>
+<tr><th>Affiliation</th><td>Indian Institute of Science</td></tr>
+</table></body></html>"""
+
+REGISTRY_PROFILE_OTHER = """<html><body><h1>Dr. Ashok Rao</h1><p>Affiliation: Somewhere Else University</p></body></html>"""
+
+DIRECTORY_WITHOUT = DIRECTORY.replace('<div class="faculty-card"><h3><a href="/people/asha-rao">Dr. Asha Rao</a></h3><p>Professor</p><p>Electrochemistry</p></div>', '')
+
 ROUTES: dict[str, tuple[str, bytes]] = {
+    "/registry/search": ("text/html", REGISTRY_SEARCH.encode()),
+    "/registry/profile/42": ("text/html", REGISTRY_PROFILE.encode()),
+    "/registry/profile/999": ("text/html", REGISTRY_PROFILE_OTHER.encode()),
+    "/faculty-without": ("text/html", DIRECTORY_WITHOUT.encode()),
     "/robots.txt": ("text/plain", b"User-agent: *\nAllow: /\n"),
     "/faculty": ("text/html", DIRECTORY.encode()),
     "/people/asha-rao": ("text/html", PROFILE.encode()),
@@ -183,6 +206,29 @@ def main() -> int:
     check("PDF: CorrTest CS350M found", "CS350M" in pt, pt)
     check("PDF: PGSTAT204 found", "PGSTAT204" in pt, pt)
     check("no errors", not r.get("errors"), json.dumps(r.get("errors")))
+
+    print("\n/scrape/affiliation — registries + directory")
+    r = post("http://localhost:8000/scrape/affiliation", {
+        "job_id": "t3", "name": "Asha Rao", "institution_name": "Fake IIT",
+        "known_institutions": ["Fake IIT", "Indian Institute of Science", "Indian Institute of Technology Bombay"],
+        "directory_urls": [f"{BASE}/faculty-without"],
+        "registries": [{"key": "vidwan", "label": "Vidwan", "search_url": f"{BASE}/registry/search?q={{name}}"}],
+        "timeout_sec_per_page": 10, "allow_browser": False,
+    })
+    check("directory was checked", r.get("directory_checked") is True, str(r))
+    check("directory no longer lists the person", r.get("directory_listed") is False, str(r.get("directory_listed")))
+    hits = r.get("hits", [])
+    reg = [h for h in hits if h["source"] == "vidwan"]
+    check("exactly one registry profile matched (not Ashok Rao, not the offsite link)", len(reg) == 1 and reg[0]["matched_name"].endswith("Asha Rao"), str(reg))
+    check("registry profile affiliation read from the labelled table", reg and reg[0]["institution"] == "Indian Institute of Science", str(reg))
+    check("registry designation and department read", reg and reg[0]["designation"] == "Professor" and (reg[0]["department"] or "").startswith("Department of Chemistry"), str(reg))
+    check("no errors", not r.get("errors"), json.dumps(r.get("errors")))
+
+    r = post("http://localhost:8000/scrape/affiliation", {
+        "job_id": "t4", "name": "Asha Rao", "institution_name": "Fake IIT", "known_institutions": [],
+        "directory_urls": [f"{BASE}/faculty"], "registries": [], "timeout_sec_per_page": 10, "allow_browser": False,
+    })
+    check("directory that still lists the person → listed, with a directory hit", r.get("directory_listed") is True and any(h["source"] == "directory" for h in r.get("hits", [])), str(r))
 
     server.shutdown()
     print(f"\n{'ALL PASSED' if failures == 0 else f'{failures} FAILED'}")

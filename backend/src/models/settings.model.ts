@@ -70,6 +70,21 @@ const settingsSchema = new Schema(
       identifyModels: { type: Boolean, default: true },
       instrumentLookbackYears: { type: Number, default: 7, min: 1, max: 30 },
       verifyAffiliations: { type: Boolean, default: true },
+      useOrcidForAffiliation: { type: Boolean, default: true },
+      affiliationRegistries: {
+        type: [
+          new Schema(
+            {
+              key: { type: String, required: true },
+              label: { type: String, required: true },
+              searchUrl: { type: String, required: true },
+              enabled: { type: Boolean, default: true },
+            },
+            { _id: false },
+          ),
+        ],
+        default: [],
+      },
       // Seeded from data/instrumentBrands.ts on first run; the UI edits it after.
       instrumentBrands: { type: [instrumentBrandSchema], default: [] },
       // Opt-out list of derived keyword groups, so a group added in code applies

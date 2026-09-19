@@ -24,6 +24,14 @@
  */
 import { INDIAN_INSTITUTIONS } from '../../data/indianInstitutions.js';
 import { getAuthorAffiliations, type AuthorAffiliations } from '../../integrations/openAlexClient.js';
+import { getOrcidEmployments, type OrcidRecord } from '../../integrations/orcidClient.js';
+import {
+  checkAffiliationViaScraper,
+  isScraperAvailable,
+  type AffiliationResponse,
+} from '../../integrations/scraperServiceClient.js';
+import { getSettings, type AppSettings } from '../settings/settingsService.js';
+import type { AffiliationEvidence } from '../../types/domain.js';
 import { repositories, where, type Filter } from '../../repositories/index.js';
 import { ApiError } from '../../middleware/errorHandler.js';
 import type { Lead, LeadAffiliation } from '../../types/domain.js';
@@ -189,26 +197,224 @@ export function affiliationPatch(
 
 export interface VerifyDeps {
   fetchAffiliations?: typeof getAuthorAffiliations;
+  fetchOrcid?: typeof getOrcidEmployments;
+  /** Directory + registries via the scraper; only used when `deep` is requested. */
+  fetchRegistries?: typeof checkAffiliationViaScraper;
+  scraperUp?: typeof isScraperAvailable;
 }
 
-/** Verifies one lead and writes the result. Returns null when there is nothing to check against. */
+/**
+ * Combines every source under one precedence rule.
+ *
+ * Order, most current first: the institute directory and IRINS (an institute
+ * listing its own people today), Vidwan (self-maintained national profile),
+ * ORCID (self-maintained employment with no end date), then OpenAlex (the
+ * affiliation on the latest paper). The first source with a positive answer
+ * decides; OpenAlex's own logic is the fallback when nothing else knows.
+ *
+ * Pure: takes what each source returned, returns the assessment plus the
+ * evidence trail. Testable without any network.
+ */
+export function combineAffiliationEvidence(
+  lead: { institutionName?: string; institutionOpenAlexId?: string },
+  sources: {
+    openalex?: AuthorAffiliations | null;
+    orcid?: OrcidRecord | null;
+    registry?: AffiliationResponse | null;
+  },
+  now: Date = new Date(),
+): AffiliationAssessment {
+  const leadInst = { name: lead.institutionName, openAlexId: lead.institutionOpenAlexId };
+  const evidence: AffiliationEvidence[] = [];
+  const decide = (
+    status: LeadAffiliation['status'],
+    source: string,
+    institution: { name?: string; openAlexId?: string; country?: string },
+    extra: Partial<LeadAffiliation> = {},
+  ): AffiliationAssessment => ({
+    status,
+    institution,
+    affiliation: { status, verifiedAt: now, source, evidence, ...extra },
+  });
+
+  // --- 1. Directory / IRINS: the institute lists them today ---------------
+  const reg = sources.registry;
+  if (reg?.directory_checked) {
+    evidence.push({
+      source: 'directory',
+      institution: reg.directory_listed ? lead.institutionName : undefined,
+      current: reg.directory_listed ?? undefined,
+      url: reg.directory_url ?? undefined,
+      detail: reg.directory_listed ? 'Listed in the institute faculty directory' : 'Not found in the institute faculty directory',
+    });
+  }
+  for (const hit of reg?.hits ?? []) {
+    if (hit.source === 'directory') continue;
+    evidence.push({
+      source: hit.source,
+      institution: hit.institution ?? undefined,
+      current: hit.institution ? true : undefined,
+      url: hit.profile_url,
+      detail: [hit.designation, hit.department].filter(Boolean).join(', ') || undefined,
+    });
+  }
+
+  if (reg?.directory_listed) {
+    return decide('current', 'directory', { name: lead.institutionName, openAlexId: lead.institutionOpenAlexId }, {
+      directoryListed: true,
+      note: 'Listed in the institute faculty directory.',
+    });
+  }
+
+  const registryHits = (reg?.hits ?? []).filter((h) => h.source !== 'directory' && h.institution);
+  // IRINS is institute-maintained; Vidwan self-maintained. Either naming an institute is a positive answer.
+  const ordered = [...registryHits].sort((a, b) => Number(b.source === 'irins') - Number(a.source === 'irins'));
+  const named = ordered[0];
+  if (named?.institution) {
+    const here = sameInstitution(leadInst, { name: named.institution });
+    if (here) {
+      return decide('current', named.source, { name: lead.institutionName, openAlexId: lead.institutionOpenAlexId }, {
+        directoryListed: reg?.directory_checked ? Boolean(reg.directory_listed) : undefined,
+        note: `${named.source === 'irins' ? 'IRINS' : 'Vidwan'} profile names ${named.institution}.`,
+      });
+    }
+    return decide('moved', named.source, { name: named.institution, openAlexId: knownInstitutionId(named.institution) }, {
+      previousInstitution: lead.institutionName,
+      previousInstitutionOpenAlexId: lead.institutionOpenAlexId,
+      directoryListed: reg?.directory_checked ? Boolean(reg.directory_listed) : undefined,
+      note: `${named.source === 'irins' ? 'IRINS' : 'Vidwan'} profile names ${named.institution}; was ${lead.institutionName ?? 'the previous institute'}.`,
+    });
+  }
+
+  // --- 2. ORCID: an employment the researcher has left open ---------------
+  const current = (sources.orcid?.employments ?? []).filter((e) => e.current);
+  for (const e of current) {
+    evidence.push({
+      source: 'orcid',
+      institution: e.organization,
+      current: true,
+      detail: [e.role, e.department, e.startYear ? `since ${e.startYear}` : undefined].filter(Boolean).join(', ') || undefined,
+    });
+  }
+  if (current.length > 0) {
+    const here = current.find((e) => sameInstitution(leadInst, { name: e.organization }));
+    if (here) {
+      return decide('current', 'orcid', { name: lead.institutionName, openAlexId: lead.institutionOpenAlexId }, {
+        directoryListed: reg?.directory_checked ? Boolean(reg.directory_listed) : undefined,
+        note: `ORCID employment at ${here.organization}${here.startYear ? ` since ${here.startYear}` : ''} with no end date.`,
+      });
+    }
+    // Every open employment is elsewhere. If OpenAlex still places them here
+    // on a paper newer than the ORCID start year, ORCID is the stale one; else move.
+    const newest = current[0]!;
+    const oa = sources.openalex;
+    const ours = oa?.affiliations.find((a) => sameInstitution(leadInst, a));
+    const lastHere = ours ? Math.max(...ours.years, 0) : 0;
+    const orcidSaysStaleHere = newest.startYear !== undefined && lastHere > newest.startYear;
+    if (!orcidSaysStaleHere) {
+      return decide('moved', 'orcid', { name: newest.organization, openAlexId: knownInstitutionId(newest.organization) }, {
+        previousInstitution: lead.institutionName,
+        previousInstitutionOpenAlexId: lead.institutionOpenAlexId,
+        lastSeenYear: lastHere || undefined,
+        directoryListed: reg?.directory_checked ? Boolean(reg.directory_listed) : undefined,
+        note: `ORCID lists a current employment at ${newest.organization}${newest.startYear ? ` since ${newest.startYear}` : ''}; was ${lead.institutionName ?? 'the previous institute'}.`,
+      });
+    }
+  }
+
+  // --- 3. OpenAlex: the affiliation on the latest paper ---------------------
+  if (sources.openalex) {
+    const oa = assessAffiliation(lead, sources.openalex, now);
+    for (const i of sources.openalex.lastKnown) {
+      evidence.push({ source: 'openalex', institution: i.name, current: true, detail: 'Named on the latest indexed work' });
+    }
+    const directoryListed = reg?.directory_checked ? Boolean(reg.directory_listed) : undefined;
+    return {
+      ...oa,
+      affiliation: {
+        ...oa.affiliation,
+        evidence,
+        directoryListed,
+        note: [oa.affiliation.note, directoryListed === false ? 'Not found in the institute faculty directory.' : undefined]
+          .filter(Boolean)
+          .join(' ') || undefined,
+      },
+    };
+  }
+
+  // --- 4. Nothing answered -------------------------------------------------
+  return decide('unverified', 'openalex', { name: lead.institutionName, openAlexId: lead.institutionOpenAlexId }, {
+    note: 'No source had an affiliation record for this person.',
+  });
+}
+
+/** Faculty directory pages configured for the lead's institute. */
+function directoryUrlsFor(institutionName: string | undefined, settings: AppSettings): string[] {
+  const key = instKey(institutionName);
+  if (!key) return [];
+  return settings.facultyTargets
+    .filter((t) => t.enabled)
+    .filter((t) => {
+      const tk = instKey(t.universityName);
+      return Boolean(tk && (tk === key || tk.includes(key) || key.includes(tk)));
+    })
+    .map((t) => t.url);
+}
+
+/**
+ * Verifies one lead and writes the result.
+ *
+ * Always consults OpenAlex and ORCID (free APIs). With `deep`, also asks the
+ * scraper for the institute directory and the registries — the most current
+ * sources, but page fetches, so reserved for on-demand checks rather than
+ * every lead of a run. Returns a null assessment only when no source at all
+ * could be consulted.
+ */
 export async function verifyLeadAffiliation(
   leadId: string,
-  deps: VerifyDeps = {},
+  deps: VerifyDeps & { deep?: boolean } = {},
 ): Promise<{ lead: Lead; assessment: AffiliationAssessment | null }> {
   const fetchAffiliations = deps.fetchAffiliations ?? getAuthorAffiliations;
+  const fetchOrcid = deps.fetchOrcid ?? getOrcidEmployments;
+  const fetchRegistries = deps.fetchRegistries ?? checkAffiliationViaScraper;
+  const scraperUp = deps.scraperUp ?? isScraperAvailable;
+
   const lead = await repositories.leads.findById(leadId);
   if (!lead) throw ApiError.notFound('Lead');
 
+  const settings = await getSettings();
   const authorId = openAlexAuthorIdOf(lead);
-  if (!authorId) {
+  const orcid = lead.person.orcid;
+  const referenceName = lead.institution.name ?? lead.institution.affiliation?.previousInstitution;
+
+  if (!authorId && !orcid && !(deps.deep && referenceName)) {
     throw ApiError.badRequest(
-      'This lead has no OpenAlex author record to check against. Leads found by discovery carry one.',
+      'Nothing to check this lead against: no OpenAlex author record, no ORCID, and no institute to look up.',
     );
   }
 
-  const record = await fetchAffiliations(authorId);
-  if (!record) return { lead, assessment: null };
+  const [openalex, orcidRecord] = await Promise.all([
+    authorId ? fetchAffiliations(authorId) : Promise.resolve(null),
+    orcid && settings.discovery.useOrcidForAffiliation ? fetchOrcid(orcid) : Promise.resolve(null),
+  ]);
+
+  let registry: AffiliationResponse | null = null;
+  if (deps.deep && referenceName && (await scraperUp())) {
+    try {
+      registry = await fetchRegistries({
+        name: lead.person.name,
+        institutionName: referenceName,
+        knownInstitutions: INDIAN_INSTITUTIONS.map((i) => i.name),
+        directoryUrls: directoryUrlsFor(referenceName, settings),
+        registries: settings.discovery.affiliationRegistries.filter((r) => r.enabled),
+        allowBrowser: settings.scraping.allowBrowser,
+      });
+    } catch {
+      registry = null; // The free sources still decide.
+    }
+  }
+
+  if (!openalex && !orcidRecord && !registry) return { lead, assessment: null };
 
   // Check the institute the lead currently shows. When that is blank (an
   // earlier check could not place them), fall back to the last one known, so a
@@ -219,9 +425,9 @@ export async function verifyLeadAffiliation(
         name: lead.institution.affiliation?.previousInstitution,
         id: lead.institution.affiliation?.previousInstitutionOpenAlexId,
       };
-  const assessment = assessAffiliation(
+  const assessment = combineAffiliationEvidence(
     { institutionName: reference.name, institutionOpenAlexId: reference.id },
-    record,
+    { openalex, orcid: orcidRecord, registry },
   );
 
   const changed = assessment.institution.name !== lead.institution.name;
@@ -257,7 +463,7 @@ export interface BulkVerifyResult {
  * shared rate limiter, so a few hundred take a couple of minutes.
  */
 export async function verifyAffiliations(
-  params: { ids?: string[]; status?: Lead['status']; brands?: string[]; limit?: number },
+  params: { ids?: string[]; status?: Lead['status']; brands?: string[]; limit?: number; deep?: boolean },
   deps: VerifyDeps = {},
 ): Promise<BulkVerifyResult> {
   const filter: Filter = [];
@@ -274,12 +480,12 @@ export async function verifyAffiliations(
 
   const out: BulkVerifyResult = { checked: 0, current: 0, moved: 0, unknown: 0, skipped: 0 };
   for (const lead of leads) {
-    if (!openAlexAuthorIdOf(lead)) {
+    if (!openAlexAuthorIdOf(lead) && !lead.person.orcid && !params.deep) {
       out.skipped += 1;
       continue;
     }
     try {
-      const { assessment } = await verifyLeadAffiliation(lead.id, deps);
+      const { assessment } = await verifyLeadAffiliation(lead.id, { ...deps, deep: params.deep });
       if (!assessment) {
         out.skipped += 1;
         continue;

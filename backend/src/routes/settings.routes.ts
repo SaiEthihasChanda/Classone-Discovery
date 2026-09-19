@@ -45,6 +45,22 @@ const settingsPatchSchema = z.object({
       identifyModels: z.boolean().optional(),
       instrumentLookbackYears: z.number().int().min(1).max(30).optional(),
       verifyAffiliations: z.boolean().optional(),
+      useOrcidForAffiliation: z.boolean().optional(),
+      affiliationRegistries: z
+        .array(
+          z.object({
+            key: z.string().trim().min(2).max(40).regex(/^[a-z0-9-]+$/),
+            label: z.string().trim().min(2).max(80),
+            searchUrl: z
+              .string()
+              .trim()
+              .url()
+              .refine((u) => u.includes('{name}'), 'Search URL must contain {name}'),
+            enabled: z.boolean().default(true),
+          }),
+        )
+        .max(10)
+        .optional(),
       instrumentBrands: z.array(instrumentBrandSchema).max(40).optional(),
       region: z.enum(['indian_institutes', 'india', 'global']).optional(),
       institutionKinds: z.array(z.enum(['IIT', 'NIT', 'IIIT'])).optional(),

@@ -293,8 +293,22 @@ move. The web-enrichment pass adds the most current signal there is — whether 
 own directory still lists the person — and records it on the lead and in the CSV
 (`Affiliation status`, `Previous institution`, `Affiliation checked`).
 
-Honest limit: OpenAlex learns about a move from the *next* paper, so someone who moved last month
-and has not published since still reads as current until the directory check says otherwise.
+OpenAlex learns about a move from the *next* paper, so it is the fallback, not the first word.
+The check combines sources under a **precedence rule**, most current first, and the first one
+with a positive answer decides; every source consulted is kept on the lead as evidence:
+
+| Source | What it says | When it runs |
+|---|---|---|
+| Institute faculty directory | listed today → current | deep check / web enrichment (scraper) |
+| IRINS (institute research information system) | institute-maintained profile → current there | deep check (scraper) |
+| Vidwan (national expert database) | self-maintained profile names an affiliation | deep check (scraper) |
+| ORCID employments | an employment with no end date → current there | every check (free API) |
+| OpenAlex author record | affiliation on the latest paper | every check (free API) |
+
+*Verify now* on a lead uses the two free APIs; *Deep check* (and the bulk action's second
+prompt) adds the directory and registries via the scraper. Registry search URLs are editable
+under *Settings → Search keywords → Researcher registries*; a site that changes its search page
+degrades to "nothing found", never to wrong data.
 
 ### Per-lead web enrichment (scraper service)
 

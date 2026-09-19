@@ -31,6 +31,34 @@ export interface ScrapeTargetConfig {
   lastCheckedAt?: Date;
 }
 
+export interface AffiliationRegistryConfig {
+  key: string;
+  label: string;
+  searchUrl: string;
+  enabled: boolean;
+}
+
+/**
+ * Default registries. URL templates are the sites' public search pages as
+ * understood at time of writing and are meant to be confirmed against the
+ * live site once (Settings shows them); the parser tolerates a mismatch by
+ * finding nothing rather than something wrong.
+ */
+export const DEFAULT_AFFILIATION_REGISTRIES: AffiliationRegistryConfig[] = [
+  {
+    key: 'irins',
+    label: 'IRINS (institute research information systems)',
+    searchUrl: 'https://irins.org/irins/searchc/search?q={name}',
+    enabled: true,
+  },
+  {
+    key: 'vidwan',
+    label: 'Vidwan (national expert database)',
+    searchUrl: 'https://vidwan.inflibnet.ac.in/searchc/search?q={name}',
+    enabled: true,
+  },
+];
+
 export interface AppSettings {
   discovery: {
     /** Additional keyword phrases on top of the derived set. Usually empty. */
@@ -57,6 +85,14 @@ export interface AppSettings {
     instrumentLookbackYears: number;
     /** Check every new lead is still at the institute, via a free OpenAlex author lookup. */
     verifyAffiliations: boolean;
+    /** Also consult the researcher's ORCID employment record (free API) in that check. */
+    useOrcidForAffiliation: boolean;
+    /**
+     * Researcher registries the deep check searches by name. `{name}` in the
+     * search URL is replaced by the URL-encoded name. Editable because these
+     * sites change their URL patterns; disable one that stops working.
+     */
+    affiliationRegistries: AffiliationRegistryConfig[];
     /** Class One's brands and their competitors — searched and detected in text. */
     instrumentBrands: InstrumentBrandConfig[];
   };
@@ -110,6 +146,8 @@ function buildDefaults(): AppSettings {
       identifyModels: true,
       instrumentLookbackYears: 7,
       verifyAffiliations: true,
+      useOrcidForAffiliation: true,
+      affiliationRegistries: DEFAULT_AFFILIATION_REGISTRIES.map((r) => ({ ...r })),
       instrumentBrands: DEFAULT_INSTRUMENT_BRANDS.map((b) => ({
         ...b,
         searchAliases: b.searchAliases ? [...b.searchAliases] : undefined,
@@ -146,6 +184,16 @@ function toPlain(doc: Record<string, any>): AppSettings {
       identifyModels: doc.discovery?.identifyModels ?? true,
       instrumentLookbackYears: doc.discovery?.instrumentLookbackYears ?? 7,
       verifyAffiliations: doc.discovery?.verifyAffiliations ?? true,
+      useOrcidForAffiliation: doc.discovery?.useOrcidForAffiliation ?? true,
+      affiliationRegistries:
+        Array.isArray(doc.discovery?.affiliationRegistries) && doc.discovery.affiliationRegistries.length > 0
+          ? doc.discovery.affiliationRegistries.map((r: Record<string, any>) => ({
+              key: String(r.key),
+              label: String(r.label ?? r.key),
+              searchUrl: String(r.searchUrl),
+              enabled: r.enabled ?? true,
+            }))
+          : DEFAULT_AFFILIATION_REGISTRIES.map((r) => ({ ...r })),
       // A settings document written before brands existed gets the seed list,
       // so the feature works on upgrade without a manual reset.
       instrumentBrands:

@@ -237,14 +237,25 @@ export async function enrichLeadFromWeb(
 
   // The directory is the most current affiliation signal there is: an
   // institute lists its people today, not as of their last paper. Listed →
-  // confirmed current. Dropped → recorded on the lead; the OpenAlex status is
+  // confirmed current. Dropped → recorded on the lead; the existing status is
   // not overridden on that alone (directories fail to parse often), but a
-  // reviewer sees it and the CSV carries it.
+  // reviewer sees it and the CSV carries it. The full multi-source check is
+  // `verifyLeadAffiliation({ deep: true })`.
   const affiliationNote: WebEnrichmentResult['affiliation'] = profile?.directory_checked
     ? { directoryListed: Boolean(profile.directory_listed) }
     : undefined;
   if (profile?.directory_checked) {
     const prior = lead.institution.affiliation;
+    const evidence = [
+      ...(prior?.evidence ?? []).filter((e) => e.source !== 'directory'),
+      {
+        source: 'directory',
+        institution: profile.directory_listed ? lead.institution.name : undefined,
+        current: Boolean(profile.directory_listed),
+        url: profile.profile_url ?? undefined,
+        detail: profile.directory_listed ? 'Listed in the institute faculty directory' : 'Not found in the institute faculty directory',
+      },
+    ];
     institution.affiliation = profile.directory_listed
       ? {
           status: 'current',
@@ -252,11 +263,13 @@ export async function enrichLeadFromWeb(
           source: 'directory',
           lastSeenYear: prior?.lastSeenYear,
           directoryListed: true,
+          evidence,
           note: 'Listed in the institute faculty directory.',
         }
       : {
           ...(prior ?? { status: 'unverified', verifiedAt: new Date(), source: 'openalex' }),
           directoryListed: false,
+          evidence,
           note: `Not found in the institute faculty directory${prior?.note ? `. ${prior.note}` : '.'}`,
         };
   }

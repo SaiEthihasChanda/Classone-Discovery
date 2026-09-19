@@ -127,11 +127,15 @@ export function LeadsPage() {
     if (
       !window.confirm(
         `Re-check the current institute of all ${data.total} lead${data.total === 1 ? '' : 's'} matching this filter?\n\n` +
-          'Uses free OpenAlex author lookups — no credits. A lead found to have moved shows its new institute; one that cannot be placed shows none.',
+          'Uses free OpenAlex and ORCID lookups — no credits. A lead found to have moved shows its new institute; one that cannot be placed shows none.',
       )
     ) {
       return;
     }
+    const deep = window.confirm(
+      'Also consult the institute directory and the IRINS/Vidwan registries?\n\n' +
+        'Most current sources, but page fetches via the scraper service — roughly 20-60 seconds per lead. OK = yes, Cancel = free lookups only.',
+    );
     setVerifying(true);
     setEnrichNote(null);
     setExportError(null);
@@ -139,7 +143,8 @@ export function LeadsPage() {
       const r = await api.verifyAffiliations({
         ...(status ? { status } : {}),
         ...(brands.length > 0 ? { brands } : {}),
-        limit: 2000,
+        limit: deep ? 100 : 2000,
+        deep,
       });
       setEnrichNote(
         `Checked ${r.checked}: ${r.current} still there, ${r.moved} moved, ${r.unknown} could not be placed (institute cleared)` +

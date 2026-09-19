@@ -25,6 +25,7 @@ const COLUMNS: Array<[string, (lead: Lead) => unknown]> = [
     },
   ],
   ['Previous institution', (l) => l.institution.affiliation?.previousInstitution],
+  ['Affiliation source', (l) => l.institution.affiliation?.source],
   ['Affiliation checked', (l) => l.institution.affiliation?.verifiedAt],
   ['Department', (l) => l.institution.department],
   ['Country', (l) => l.institution.country],

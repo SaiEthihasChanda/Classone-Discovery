@@ -88,7 +88,22 @@ const leadSchema = new Schema(
       affiliation: {
         status: { type: String, enum: ['current', 'moved', 'unknown', 'unverified'] },
         verifiedAt: Date,
-        source: { type: String, enum: ['openalex', 'directory'] },
+        source: String,
+        evidence: {
+          type: [
+            new Schema(
+              {
+                source: { type: String, required: true },
+                institution: String,
+                current: Boolean,
+                url: String,
+                detail: String,
+              },
+              { _id: false },
+            ),
+          ],
+          default: undefined,
+        },
         lastSeenYear: Number,
         previousInstitution: String,
         previousInstitutionOpenAlexId: String,

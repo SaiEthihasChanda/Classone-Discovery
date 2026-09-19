@@ -81,10 +81,19 @@ export interface Lead {
 }
 
 /** Whether the person is still at the institute on the lead, as last checked. */
+export interface AffiliationEvidence {
+  source: string;
+  institution?: string;
+  current?: boolean;
+  url?: string;
+  detail?: string;
+}
+
 export interface LeadAffiliation {
   status: 'current' | 'moved' | 'unknown' | 'unverified';
   verifiedAt: string;
-  source: 'openalex' | 'directory';
+  source: string;
+  evidence?: AffiliationEvidence[];
   lastSeenYear?: number;
   previousInstitution?: string;
   previousInstitutionOpenAlexId?: string;

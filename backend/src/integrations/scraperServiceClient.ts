@@ -191,6 +191,58 @@ export async function enrichLeadViaScraper(payload: EnrichLeadPayload): Promise<
   });
 }
 
+export interface RegistrySpec {
+  key: string;
+  label: string;
+  /** Search URL with {name} where the URL-encoded name goes. */
+  searchUrl: string;
+}
+
+export interface AffiliationHit {
+  source: string;
+  profile_url: string;
+  matched_name: string;
+  institution?: string | null;
+  department?: string | null;
+  designation?: string | null;
+  detail?: string | null;
+}
+
+export interface AffiliationResponse {
+  job_id: string;
+  directory_checked: boolean;
+  directory_listed?: boolean | null;
+  directory_url?: string | null;
+  hits: AffiliationHit[];
+  errors: ScrapeError[];
+}
+
+/** Where is this person now, per the institute directory and the researcher registries? */
+export async function checkAffiliationViaScraper(payload: {
+  name: string;
+  institutionName?: string;
+  knownInstitutions: string[];
+  directoryUrls: string[];
+  registries: RegistrySpec[];
+  allowBrowser?: boolean;
+}): Promise<AffiliationResponse> {
+  return fetchJson<AffiliationResponse>(`${env.SCRAPER_SERVICE_URL}/scrape/affiliation`, {
+    method: 'POST',
+    timeoutMs: SCRAPE_TIMEOUT_MS,
+    retries: 0,
+    body: {
+      job_id: randomUUID(),
+      name: payload.name,
+      institution_name: payload.institutionName,
+      known_institutions: payload.knownInstitutions,
+      directory_urls: payload.directoryUrls,
+      registries: payload.registries.map((r) => ({ key: r.key, label: r.label, search_url: r.searchUrl })),
+      timeout_sec_per_page: 20,
+      allow_browser: payload.allowBrowser ?? true,
+    },
+  });
+}
+
 export interface PaperTextResponse {
   job_id: string;
   results: Array<{ id: string; url: string; kind: 'pdf' | 'html'; chars: number; snippets: string[] }>;

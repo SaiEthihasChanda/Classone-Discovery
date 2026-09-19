@@ -64,11 +64,24 @@ export interface LeadPerson {
  * honest answer — showing a stale institute sends a salesperson to the wrong
  * campus.
  */
+/** One source's answer to "where is this person?", kept so a reviewer can see why. */
+export interface AffiliationEvidence {
+  source: 'directory' | 'irins' | 'vidwan' | 'orcid' | 'openalex' | string;
+  /** What the source says the current institution is; absent = source had nothing. */
+  institution?: string;
+  /** True when the source positively places them there now (a listing, an open employment). */
+  current?: boolean;
+  url?: string;
+  detail?: string;
+}
+
 export interface LeadAffiliation {
   status: 'current' | 'moved' | 'unknown' | 'unverified';
   verifiedAt: Date;
-  /** OpenAlex author record, or the institute's own directory (web enrichment). */
-  source: 'openalex' | 'directory';
+  /** Which source decided the status (highest-precedence one that had an answer). */
+  source: 'openalex' | 'directory' | 'irins' | 'vidwan' | 'orcid' | string;
+  /** Everything consulted this time, in precedence order. */
+  evidence?: AffiliationEvidence[];
   /** Most recent year a paper named them at the (previous) institute. */
   lastSeenYear?: number;
   previousInstitution?: string;

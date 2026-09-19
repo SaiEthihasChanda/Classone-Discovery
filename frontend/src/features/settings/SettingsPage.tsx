@@ -588,6 +588,77 @@ function InstrumentBrandsCard({
         shown at the new institute; one with no current institute on record is shown with none,
         rather than the stale one.
       </p>
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontWeight: 400,
+          textTransform: 'none',
+          fontSize: 13,
+          color: 'var(--text)',
+          marginTop: 8,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={draft.discovery.useOrcidForAffiliation}
+          onChange={(e) =>
+            update((d) => ({ ...d, discovery: { ...d.discovery, useOrcidForAffiliation: e.target.checked } }))
+          }
+          style={{ width: 'auto' }}
+        />
+        Also consult ORCID employment records
+        <span className="muted small">(free API; an open employment beats the last paper)</span>
+      </label>
+
+      <h3 className="section-title" style={{ marginTop: 16 }}>
+        Researcher registries (deep check)
+      </h3>
+      <p className="muted small" style={{ marginTop: 0 }}>
+        Searched by name when a lead is deep-checked. The institute directory and IRINS outrank
+        Vidwan, which outranks ORCID, which outranks OpenAlex. <span className="mono">{'{name}'}</span>{' '}
+        in the URL is replaced by the researcher&rsquo;s name. If a site changes its search page,
+        fix the URL here or switch it off — a mismatch finds nothing rather than something wrong.
+      </p>
+      {draft.discovery.affiliationRegistries.map((reg, index) => (
+        <div key={reg.key} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+          <label className="small" style={{ display: 'flex', gap: 4, alignItems: 'center', fontWeight: 400, textTransform: 'none', marginBottom: 0, flex: '0 0 240px' }}>
+            <input
+              type="checkbox"
+              checked={reg.enabled}
+              onChange={(e) =>
+                update((d) => ({
+                  ...d,
+                  discovery: {
+                    ...d.discovery,
+                    affiliationRegistries: d.discovery.affiliationRegistries.map((r, i) =>
+                      i === index ? { ...r, enabled: e.target.checked } : r,
+                    ),
+                  },
+                }))
+              }
+              style={{ width: 'auto' }}
+            />
+            {reg.label}
+          </label>
+          <input
+            value={reg.searchUrl}
+            onChange={(e) =>
+              update((d) => ({
+                ...d,
+                discovery: {
+                  ...d.discovery,
+                  affiliationRegistries: d.discovery.affiliationRegistries.map((r, i) =>
+                    i === index ? { ...r, searchUrl: e.target.value } : r,
+                  ),
+                },
+              }))
+            }
+            style={{ flex: '1 1 320px', fontFamily: 'monospace', fontSize: 12 }}
+          />
+        </div>
+      ))}
 
       <div className="field" style={{ maxWidth: 260, marginTop: 14 }}>
         <label htmlFor="lookback">Look back (years) for instrument use</label>

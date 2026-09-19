@@ -10,6 +10,9 @@ import asyncio
 from fastapi import APIRouter
 
 from ..core.schemas import (
+    AffiliationHit,
+    AffiliationRequest,
+    AffiliationResponse,
     EnrichLeadRequest,
     EnrichLeadResponse,
     PaperTextRequest,
@@ -29,6 +32,7 @@ from ..scrapers.enrichment import (
 )
 from ..scrapers.faculty_scraper import extract_emails_from_page, parse_faculty_page, pick_personal_email
 from ..scrapers.paper_text import fetch_paper, methods_section
+from ..scrapers.registries import search_registry
 from ..scrapers.static_fetcher import FetchError, fetch_page
 from ..scrapers.tiered_fetcher import fetch_with_escalation
 
@@ -193,4 +197,65 @@ async def paper_text(request: PaperTextRequest) -> PaperTextResponse:
 
     # Concurrent across papers; the per-domain delay still serialises one publisher.
     await asyncio.gather(*(one(p) for p in request.papers[:10]))
+    return out
+
+
+@router.post("/affiliation", response_model=AffiliationResponse)
+async def affiliation(request: AffiliationRequest) -> AffiliationResponse:
+    """Where is this person now, according to sources other than bibliography?
+
+    The institute directory (present = current there) and the researcher
+    registries (a profile names an affiliation). Node combines these with
+    ORCID and OpenAlex under a precedence rule; this only reports what each
+    source said, with the URL it said it on.
+    """
+    out = AffiliationResponse(job_id=request.job_id)
+
+    # --- Institute directory -------------------------------------------------
+    for directory_url in request.directory_urls[:3]:
+        try:
+            outcome = await fetch_with_escalation(
+                directory_url, request.timeout_sec_per_page, allow_browser=request.allow_browser, allow_proxy=False
+            )
+            people = parse_faculty_page(outcome.html, directory_url)
+        except Exception as exc:  # noqa: BLE001
+            out.errors.append(_error(directory_url, exc))
+            continue
+        if len(people) < 3:
+            continue  # Did not parse into a real list; says nothing either way.
+        out.directory_checked = True
+        out.directory_url = directory_url
+        match = next((p for p in people if name_matches(p.name, request.name)), None)
+        if match:
+            out.directory_listed = True
+            out.hits.append(
+                AffiliationHit(
+                    source="directory",
+                    profile_url=match.profile_url or directory_url,
+                    matched_name=match.name,
+                    institution=request.institution_name,
+                    department=match.department,
+                    designation=match.title,
+                )
+            )
+            break
+        out.directory_listed = False
+
+    # --- Registries ----------------------------------------------------------
+    async def one(spec) -> None:
+        result = await search_registry(
+            spec.key, spec.search_url, request.name, request.known_institutions,
+            timeout_sec=request.timeout_sec_per_page,
+        )
+        if result.error:
+            out.errors.append(ScrapeError(target=result.search_url, reason=ScrapeErrorReason.HTTP_ERROR, detail=result.error))
+        for h in result.hits:
+            out.hits.append(
+                AffiliationHit(
+                    source=h.source, profile_url=h.profile_url, matched_name=h.matched_name,
+                    institution=h.institution, department=h.department, designation=h.designation, detail=h.detail,
+                )
+            )
+
+    await asyncio.gather(*(one(spec) for spec in request.registries[:4]))
     return out

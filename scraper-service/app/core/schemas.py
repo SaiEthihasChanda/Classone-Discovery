@@ -228,3 +228,46 @@ class PaperTextResponse(BaseModel):
     job_id: str
     results: list[PaperTextResult] = Field(default_factory=list)
     errors: list[ScrapeError] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Affiliation check via registries (IRINS, Vidwan) and the institute directory
+# ---------------------------------------------------------------------------
+
+
+class RegistrySpec(BaseModel):
+    key: str
+    label: str
+    # A search URL with {name} where the URL-encoded name goes.
+    search_url: str
+
+
+class AffiliationRequest(BaseModel):
+    job_id: str
+    name: str
+    institution_name: Optional[str] = None
+    # Institute names to recognise on a profile page when no field is labelled.
+    known_institutions: list[str] = Field(default_factory=list)
+    directory_urls: list[str] = Field(default_factory=list)
+    registries: list[RegistrySpec] = Field(default_factory=list)
+    timeout_sec_per_page: int = Field(default=20, ge=1, le=120)
+    allow_browser: bool = True
+
+
+class AffiliationHit(BaseModel):
+    source: str
+    profile_url: str
+    matched_name: str
+    institution: Optional[str] = None
+    department: Optional[str] = None
+    designation: Optional[str] = None
+    detail: Optional[str] = None
+
+
+class AffiliationResponse(BaseModel):
+    job_id: str
+    directory_checked: bool = False
+    directory_listed: Optional[bool] = None
+    directory_url: Optional[str] = None
+    hits: list[AffiliationHit] = Field(default_factory=list)
+    errors: list[ScrapeError] = Field(default_factory=list)

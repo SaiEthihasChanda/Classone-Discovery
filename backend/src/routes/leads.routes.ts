@@ -280,6 +280,8 @@ const bulkVerifySchema = z.object({
   status: z.enum(['pending_review', 'approved', 'rejected', 'customer']).optional(),
   brands: z.array(z.string()).optional(),
   limit: z.number().int().min(1).max(2000).optional(),
+  /** Also consult the institute directory and registries via the scraper. */
+  deep: z.boolean().optional(),
 });
 
 leadsRouter.post(
@@ -290,11 +292,13 @@ leadsRouter.post(
   }),
 );
 
-// POST /api/leads/:id/verify-affiliation — one lead, now.
+// POST /api/leads/:id/verify-affiliation — one lead, now. `{ deep: true }`
+// also asks the institute directory and the registries (needs the scraper).
 leadsRouter.post(
   '/:id/verify-affiliation',
   asyncHandler(async (req, res) => {
-    res.json(await verifyLeadAffiliation(req.params.id!));
+    const deep = z.object({ deep: z.boolean().optional() }).parse(req.body ?? {}).deep ?? false;
+    res.json(await verifyLeadAffiliation(req.params.id!, { deep }));
   }),
 );
 

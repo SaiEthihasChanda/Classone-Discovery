@@ -224,13 +224,14 @@ export const api = {
 
   /** Deletes every lead, thread and activity entry. The phrase is the safety catch. */
   /** "Still at this institute?" — one lead, via a free OpenAlex author lookup. */
-  verifyAffiliation: (id: string) =>
+  verifyAffiliation: (id: string, deep = false) =>
     request<{ lead: Lead; assessment: { status: string } | null }>(`/leads/${id}/verify-affiliation`, {
       method: 'POST',
-      signal: AbortSignal.timeout(60_000),
+      body: JSON.stringify({ deep }),
+      signal: AbortSignal.timeout(deep ? 300_000 : 60_000),
     }),
 
-  verifyAffiliations: (params: { ids?: string[]; status?: string; brands?: string[]; limit?: number }) =>
+  verifyAffiliations: (params: { ids?: string[]; status?: string; brands?: string[]; limit?: number; deep?: boolean }) =>
     request<{ checked: number; current: number; moved: number; unknown: number; skipped: number }>(
       '/leads/verify-affiliations',
       { method: 'POST', body: JSON.stringify(params), signal: AbortSignal.timeout(900_000) },
@@ -338,6 +339,8 @@ export interface AppSettings {
     identifyModels: boolean;
     instrumentLookbackYears: number;
     verifyAffiliations: boolean;
+    useOrcidForAffiliation: boolean;
+    affiliationRegistries: Array<{ key: string; label: string; searchUrl: string; enabled: boolean }>;
     instrumentBrands: InstrumentBrandConfig[];
     /** Derived keyword groups switched off; see `DiscoveryConfig.keywordSearch`. */
     disabledKeywordGroups: string[];
