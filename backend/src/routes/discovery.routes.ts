@@ -43,6 +43,7 @@ const runSchema = z.object({
   includeInstrumentSearch: z.boolean().optional(),
   includeTopicSearch: z.boolean().optional(),
   includeKeywordSearch: z.boolean().optional(),
+  verifyAffiliations: z.boolean().optional(),
 });
 
 /**

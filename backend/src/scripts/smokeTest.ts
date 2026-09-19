@@ -705,6 +705,190 @@ async function main(): Promise<void> {
     assert.ok(body.institutions.total >= 70, 'institution list missing from the response');
   });
 
+  console.log('\nAffiliation check — is the lead still at the institute?\n');
+
+  const { assessAffiliation, verifyLeadAffiliation, affiliationIsStale } = await import(
+    '../services/leads/affiliationService.js'
+  );
+  const IITB = { id: 'I162827531', name: 'Indian Institute of Technology Bombay', country: 'IN' };
+  const IISC = { id: 'I4210', name: 'Indian Institute of Science', country: 'IN' };
+  const NUS = { id: 'I165932596', name: 'National University of Singapore', country: 'SG' };
+  const NOW = new Date('2026-09-19');
+  const atIITB = { institutionName: IITB.name, institutionOpenAlexId: IITB.id };
+
+  await check('still named on the latest work → current', async () => {
+    const a = assessAffiliation(atIITB, {
+      authorId: 'A1',
+      lastKnown: [IITB],
+      affiliations: [{ ...IITB, years: [2026, 2025, 2024] }],
+    }, NOW);
+    assert.equal(a.status, 'current');
+    assert.equal(a.institution.name, IITB.name);
+    assert.equal(a.affiliation.lastSeenYear, 2026);
+  });
+
+  await check('latest work elsewhere, newer than anything from ours → moved, new institute shown', async () => {
+    const a = assessAffiliation(atIITB, {
+      authorId: 'A1',
+      lastKnown: [NUS],
+      affiliations: [{ ...NUS, years: [2026] }, { ...IITB, years: [2025, 2024, 2023] }],
+    }, NOW);
+    assert.equal(a.status, 'moved');
+    assert.equal(a.institution.name, NUS.name);
+    assert.equal(a.institution.openAlexId, NUS.id);
+    assert.equal(a.affiliation.previousInstitution, IITB.name);
+    assert.match(a.affiliation.note ?? '', /2026.*National University of Singapore.*2025/);
+  });
+
+  await check('a concurrent second affiliation with the same latest year is NOT a move', async () => {
+    const a = assessAffiliation(atIITB, {
+      authorId: 'A1',
+      lastKnown: [IISC],
+      affiliations: [{ ...IISC, years: [2025] }, { ...IITB, years: [2025, 2024] }],
+    }, NOW);
+    assert.equal(a.status, 'current');
+    assert.equal(a.institution.name, IITB.name);
+    assert.match(a.affiliation.note ?? '', /Also affiliated with Indian Institute of Science/);
+  });
+
+  await check('no last-known institution but recent output from ours → current', async () => {
+    const a = assessAffiliation(atIITB, {
+      authorId: 'A1',
+      lastKnown: [],
+      affiliations: [{ ...IITB, years: [2024] }],
+    }, NOW);
+    assert.equal(a.status, 'current');
+  });
+
+  await check('no last-known institution and nothing recent → unknown, institution BLANK', async () => {
+    const a = assessAffiliation(atIITB, {
+      authorId: 'A1',
+      lastKnown: [],
+      affiliations: [{ ...IITB, years: [2021, 2020] }],
+    }, NOW);
+    assert.equal(a.status, 'unknown');
+    assert.equal(a.institution.name, undefined);
+    assert.equal(a.affiliation.previousInstitution, IITB.name);
+    assert.equal(a.affiliation.lastSeenYear, 2021);
+  });
+
+  await check('matches by name when the lead has no institution id', async () => {
+    const a = assessAffiliation({ institutionName: 'IIT Bombay' }, {
+      authorId: 'A1',
+      lastKnown: [IITB],
+      affiliations: [{ ...IITB, years: [2026] }],
+    }, NOW);
+    assert.equal(a.status, 'current');
+  });
+
+  // A lead that OpenAlex says has moved: the institution must actually change
+  // in the database, and the old one be kept as previousInstitution.
+  const moverId = (
+    await request('/leads', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Test Mover',
+        institutionName: IITB.name,
+        department: 'Department of Chemistry',
+        profileUrl: 'https://openalex.org/A5000000001',
+      }),
+    })
+  ).body.lead.id as string;
+
+  await check('verifyLeadAffiliation writes the move: new institute, department cleared, old kept', async () => {
+    const { lead, assessment } = await verifyLeadAffiliation(moverId, {
+      fetchAffiliations: async () => ({
+        authorId: 'A5000000001',
+        lastKnown: [NUS],
+        affiliations: [{ ...NUS, years: [2026] }, { ...IITB, years: [2025] }],
+      }),
+    });
+    assert.equal(assessment?.status, 'moved');
+    assert.equal(lead.institution.name, NUS.name);
+    assert.equal(lead.institution.openAlexId, NUS.id);
+    assert.equal(lead.institution.department, undefined, 'department should not follow a move');
+    assert.equal(lead.institution.affiliation?.previousInstitution, IITB.name);
+    assert.ok(!affiliationIsStale(lead), 'a fresh check must not read as stale');
+  });
+
+  await check('verifyLeadAffiliation BLANKS an institution that cannot be confirmed', async () => {
+    const { lead, assessment } = await verifyLeadAffiliation(moverId, {
+      fetchAffiliations: async () => ({
+        authorId: 'A5000000001',
+        lastKnown: [],
+        affiliations: [{ ...NUS, years: [2020] }],
+      }),
+    });
+    assert.equal(assessment?.status, 'unknown');
+    assert.equal(lead.institution.name, undefined, 'institution should be blank');
+    assert.equal(lead.institution.normalizedNameKey, undefined);
+    // The previous institute is the one we were just at (NUS), kept for the record.
+    assert.equal(lead.institution.affiliation?.previousInstitution, NUS.name);
+    const fetched = (await request(`/leads/${moverId}`)).body;
+    assert.equal(fetched.institution.name, undefined, 'blank must persist, not just be returned');
+  });
+
+  await check('a lead with no OpenAlex author id is refused with a clear message', async () => {
+    const manualId = (
+      await request('/leads', { method: 'POST', body: JSON.stringify({ name: 'No Record Person' }) })
+    ).body.lead.id as string;
+    const { status, body } = await request(`/leads/${manualId}/verify-affiliation`, { method: 'POST' });
+    assert.equal(status, 400);
+    assert.match(body.error, /no OpenAlex author record/i);
+  });
+
+  await check('a discovery run verifies each new lead and blanks a mover it cannot place', async () => {
+    const candidate = {
+      sourceType: 'openalex' as const,
+      sourceRecordId: 'https://openalex.org/A5000000777',
+      profileUrl: 'https://openalex.org/A5000000777',
+      name: 'Gone Elsewhere',
+      institutionName: IITB.name,
+      institutionOpenAlexId: IITB.id,
+      country: 'IN',
+      publications: [{ title: 'Old paper on electrochemical sensors', year: 2022, sourceId: 'https://openalex.org/W7' }],
+      grants: [],
+      topics: ['Electrochemical sensors and biosensors'],
+      evidenceText: 'Old paper on electrochemical sensors using a potentiostat.',
+    };
+    const summary = await runDiscovery(
+      { sources: ['openalex'], skipEnrichment: true, verifyAffiliations: true },
+      {
+        provider,
+        fetchers: {
+          openalex: async () => ({ source: 'openalex', candidates: [candidate], errors: [] }),
+          grants: emptySource,
+          faculty: emptySource,
+          news: emptySource,
+          affiliations: async () => ({
+            authorId: 'A5000000777',
+            lastKnown: [],
+            affiliations: [{ ...IITB, years: [2022, 2021] }],
+          }),
+        },
+      },
+    );
+    assert.equal(summary.leadsCreated, 1);
+    assert.equal(summary.affiliationChanges, 1);
+    const { body } = await request('/leads?search=Gone%20Elsewhere');
+    assert.equal(body.items.length, 1);
+    assert.equal(body.items[0].institution.name, undefined, 'mover was still shown at the institute');
+    assert.equal(body.items[0].institution.affiliation.status, 'unknown');
+    assert.equal(body.items[0].institution.affiliation.previousInstitution, IITB.name);
+  });
+
+  await check('POST /leads/verify-affiliations tallies results and skips leads without a record', async () => {
+    const { status, body } = await request('/leads/verify-affiliations', {
+      method: 'POST',
+      body: JSON.stringify({ limit: 50 }),
+    });
+    assert.equal(status, 200);
+    // Live lookups are impossible here (no network), so every lead with an id
+    // is counted as skipped — the point is the endpoint works and never throws.
+    assert.equal(typeof body.checked, 'number');
+    assert.ok(body.skipped >= 1);
+  });
+
   console.log('\nWeb enrichment (profile, lab site, papers) — all dependencies injected:\n');
 
   const { enrichLeadFromWeb } = await import('../services/leads/webEnrichment.js');
@@ -761,6 +945,42 @@ async function main(): Promise<void> {
       },
     ],
     errors: [],
+  });
+
+  await check('web enrichment records the directory signal on the affiliation', async () => {
+    const dirLeadId = (
+      await request('/leads', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Listed Person', institutionName: IITB.name, profileUrl: 'https://openalex.org/A5000000002' }),
+      })
+    ).body.lead.id as string;
+    const listed = await enrichLeadFromWeb(dirLeadId, {
+      scrapeLead: async () => ({
+        job_id: 'd', directory_checked: true, directory_listed: true, profile_url: 'https://www.iitb.ac.in/people/lp',
+        email: null, phone: null, designation: null, department: null, websites: [], snippets: [], pages_visited: ['x'], errors: [],
+      }),
+      readPapers: async () => ({ job_id: 'd', results: [], errors: [] }),
+      resolveOpenAccess: async () => null,
+      scraperUp: async () => true,
+    });
+    assert.deepEqual(listed.affiliation, { directoryListed: true });
+    assert.equal(listed.lead.institution.affiliation?.status, 'current');
+    assert.equal(listed.lead.institution.affiliation?.source, 'directory');
+
+    const dropped = await enrichLeadFromWeb(dirLeadId, {
+      scrapeLead: async () => ({
+        job_id: 'd', directory_checked: true, directory_listed: false, profile_url: null,
+        email: null, phone: null, designation: null, department: null, websites: [], snippets: [], pages_visited: ['x'], errors: [],
+      }),
+      readPapers: async () => ({ job_id: 'd', results: [], errors: [] }),
+      resolveOpenAccess: async () => null,
+      scraperUp: async () => true,
+    });
+    assert.deepEqual(dropped.affiliation, { directoryListed: false });
+    assert.equal(dropped.lead.institution.affiliation?.directoryListed, false);
+    assert.match(dropped.lead.institution.affiliation?.note ?? '', /Not found in the institute faculty directory/);
+    // Not overridden on the directory alone — the institute stays until OpenAlex agrees.
+    assert.equal(dropped.lead.institution.name, IITB.name);
   });
 
   await check('fills email, phone, department and website; never overwrites a set title', async () => {

@@ -153,6 +153,8 @@ export interface TextSnippet {
 
 export interface EnrichLeadResponse {
   job_id: string;
+  directory_checked?: boolean;
+  directory_listed?: boolean | null;
   profile_url?: string | null;
   email?: string | null;
   phone?: string | null;

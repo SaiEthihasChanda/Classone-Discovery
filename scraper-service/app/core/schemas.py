@@ -187,6 +187,11 @@ class TextSnippet(BaseModel):
 
 class EnrichLeadResponse(BaseModel):
     job_id: str
+    # Whether the institute directory was read, and whether it listed the
+    # person. A directory that has dropped them is the most current sign of a
+    # move there is; Node folds it into the affiliation status.
+    directory_checked: bool = False
+    directory_listed: Optional[bool] = None
     profile_url: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None

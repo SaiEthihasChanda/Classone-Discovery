@@ -184,13 +184,27 @@ export abstract class MongoRepository<TDoc extends { id: string }, TCreate>
     return created.map((d) => this.toDomain(d.toObject())!);
   }
 
-  async updateById(id: string, patch: DeepPartial<TDoc>): Promise<TDoc | null> {
+  /**
+   * `patch` sets fields; `undefined` inside it means "leave alone", which is
+   * what most callers want. To CLEAR a field, name its dotted path in
+   * `options.unset` — the affiliation check uses this to blank an institution
+   * that can no longer be confirmed, which is a deliberate act, not an omission.
+   */
+  async updateById(
+    id: string,
+    patch: DeepPartial<TDoc>,
+    options: { unset?: string[] } = {},
+  ): Promise<TDoc | null> {
     if (!isValidObjectId(id)) return null;
     const flattened = flattenForSet(patch as Record<string, unknown>);
+    const unset = (options.unset ?? []).filter((path) => !(path in flattened));
     // An empty patch is a no-op read, not an error.
-    if (Object.keys(flattened).length === 0) return this.findById(id);
+    if (Object.keys(flattened).length === 0 && unset.length === 0) return this.findById(id);
 
-    const update: UpdateQuery<any> = { $set: flattened };
+    const update: UpdateQuery<any> = {
+      ...(Object.keys(flattened).length > 0 ? { $set: flattened } : {}),
+      ...(unset.length > 0 ? { $unset: Object.fromEntries(unset.map((p) => [p, ''])) } : {}),
+    };
     const doc = await this.model
       .findByIdAndUpdate(id, update, { new: true, runValidators: true })
       .lean()

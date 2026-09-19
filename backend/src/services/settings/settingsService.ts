@@ -55,6 +55,8 @@ export interface AppSettings {
     identifyModels: boolean;
     /** How many years back brand and model searches look. An instrument outlives a paper. */
     instrumentLookbackYears: number;
+    /** Check every new lead is still at the institute, via a free OpenAlex author lookup. */
+    verifyAffiliations: boolean;
     /** Class One's brands and their competitors — searched and detected in text. */
     instrumentBrands: InstrumentBrandConfig[];
   };
@@ -107,6 +109,7 @@ function buildDefaults(): AppSettings {
       instrumentSearchEnabled: true,
       identifyModels: true,
       instrumentLookbackYears: 7,
+      verifyAffiliations: true,
       instrumentBrands: DEFAULT_INSTRUMENT_BRANDS.map((b) => ({
         ...b,
         searchAliases: b.searchAliases ? [...b.searchAliases] : undefined,
@@ -142,6 +145,7 @@ function toPlain(doc: Record<string, any>): AppSettings {
       instrumentSearchEnabled: doc.discovery?.instrumentSearchEnabled ?? true,
       identifyModels: doc.discovery?.identifyModels ?? true,
       instrumentLookbackYears: doc.discovery?.instrumentLookbackYears ?? 7,
+      verifyAffiliations: doc.discovery?.verifyAffiliations ?? true,
       // A settings document written before brands existed gets the seed list,
       // so the feature works on upgrade without a manual reset.
       instrumentBrands:

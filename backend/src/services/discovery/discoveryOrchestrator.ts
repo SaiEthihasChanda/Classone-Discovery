@@ -14,6 +14,13 @@
 import { randomUUID } from 'node:crypto';
 import { OPENALEX_TOPIC_GROUPS } from '../../data/openAlexTopics.js';
 import { buildKeywordPhrases } from './keywords.js';
+import type { getAuthorAffiliations } from '../../integrations/openAlexClient.js';
+import {
+  affiliationIsStale,
+  knownInstitutionId,
+  openAlexAuthorIdOf,
+  verifyLeadAffiliation,
+} from '../leads/affiliationService.js';
 import { getBudgetSnapshot, isExhausted, OpenAlexBudgetError } from '../../integrations/openAlexBudget.js';
 import { ApiError } from '../../middleware/errorHandler.js';
 import { repositories } from '../../repositories/index.js';
@@ -118,6 +125,7 @@ function mergeCandidates(
     orcid: existing.orcid ?? incoming.orcid,
     profileUrl: existing.profileUrl ?? incoming.profileUrl,
     institutionName: existing.institutionName ?? incoming.institutionName,
+    institutionOpenAlexId: existing.institutionOpenAlexId ?? incoming.institutionOpenAlexId,
     department: existing.department ?? incoming.department,
     country: existing.country ?? incoming.country,
     publications: dedupePublications([...existing.publications, ...incoming.publications]).slice(0, 10),
@@ -164,6 +172,8 @@ export interface RunDiscoveryDeps {
     grants?: typeof fetchFromGrants;
     faculty?: typeof fetchFromFacultyPages;
     news?: typeof fetchFromNews;
+    /** The author-record lookup behind the affiliation check. */
+    affiliations?: typeof getAuthorAffiliations;
   };
 }
 
@@ -247,6 +257,7 @@ export async function runDiscovery(
     grants: deps.fetchers?.grants ?? fetchFromGrants,
     faculty: deps.fetchers?.faculty ?? fetchFromFacultyPages,
     news: deps.fetchers?.news ?? fetchFromNews,
+    affiliations: deps.fetchers?.affiliations,
   };
 
   const errors: string[] = [];
@@ -349,7 +360,9 @@ export async function runDiscovery(
   let leadsCreated = 0;
   let duplicatesSkipped = 0;
   let enrichedCount = 0;
+  let affiliationChanges = 0;
   let budgetStopped = false;
+  const verifyAffiliations = options.verifyAffiliations ?? settings.discovery.verifyAffiliations;
 
   for (const candidate of candidates) {
     if (budgetStopped) break;
@@ -368,6 +381,17 @@ export async function runDiscovery(
 
       if (existing) {
         duplicatesSkipped += 1;
+        // Known lead, stale check: re-verify while we are here. Free, cached.
+        if (verifyAffiliations && affiliationIsStale(existing) && openAlexAuthorIdOf(existing)) {
+          try {
+            const { assessment } = await verifyLeadAffiliation(existing.id, {
+              fetchAffiliations: fetchers.affiliations,
+            });
+            if (assessment && assessment.status !== 'current') affiliationChanges += 1;
+          } catch {
+            // Best effort.
+          }
+        }
         // Already known and still fresh — the cache hit that saves the money.
         if (isEnrichmentFresh(existing, contentHash)) {
           // ...but a newly seen instrument is still worth recording. Costs no
@@ -393,12 +417,27 @@ export async function runDiscovery(
         continue;
       }
 
-      const lead = await createLeadFromCandidate(candidate, contentHash, {
+      let lead = await createLeadFromCandidate(candidate, contentHash, {
         catalog,
         budget,
         provider,
         skipEnrichment: options.skipEnrichment,
       });
+
+      // Still there? A free author lookup; the paper that found them may be a
+      // year old. Applied before the lead is ever shown, so a mover is never
+      // listed under the institute they left.
+      if (verifyAffiliations && candidate.sourceType !== 'faculty_page') {
+        try {
+          const { lead: verified, assessment } = await verifyLeadAffiliation(lead.id, {
+            fetchAffiliations: fetchers.affiliations,
+          });
+          lead = verified;
+          if (assessment && assessment.status !== 'current') affiliationChanges += 1;
+        } catch {
+          // No author record to check against — the lead keeps what the paper said.
+        }
+      }
 
       leadsCreated += 1;
       if (!options.skipEnrichment) enrichedCount += 1;
@@ -437,6 +476,7 @@ export async function runDiscovery(
     duplicatesSkipped,
     enrichedCount,
     instrumentsDetected,
+    affiliationChanges,
     openAlexExhausted,
     openAlexCreditsEstimated,
     errors,
@@ -495,6 +535,7 @@ async function createLeadFromCandidate(
     institution: {
       name: candidate.institutionName,
       normalizedNameKey: normalizeInstitutionKey(candidate.institutionName),
+      openAlexId: candidate.institutionOpenAlexId ?? knownInstitutionId(candidate.institutionName),
       department: candidate.department,
       country: candidate.country,
     },

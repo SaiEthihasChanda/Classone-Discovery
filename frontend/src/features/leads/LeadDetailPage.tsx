@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../../api/client';
 import { useAsync } from '../../hooks/useAsync';
 import {
+  AffiliationNote,
   ErrorBanner,
   InstrumentBadge,
   Loading,
@@ -23,6 +24,7 @@ export function LeadDetailPage() {
   const [scanNote, setScanNote] = useState<string | null>(null);
   const [enriching, setEnriching] = useState(false);
   const [enrichNote, setEnrichNote] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
 
   /**
    * Asks OpenAlex about this researcher's own papers, brand by brand. The
@@ -131,6 +133,25 @@ export function LeadDetailPage() {
     }
   }
 
+  async function verifyNow() {
+    if (!lead) return;
+    setVerifying(true);
+    setActionError(null);
+    try {
+      const r = await api.verifyAffiliation(lead.id);
+      setEnrichNote(
+        r.assessment
+          ? `Affiliation check: ${r.assessment.status === 'current' ? 'still at ' + (r.lead.institution.name ?? 'this institute') : r.assessment.status === 'moved' ? 'moved to ' + (r.lead.institution.name ?? '?') : 'current institute could not be established — cleared'}.`
+          : 'OpenAlex has no affiliation record for this author.',
+      );
+      reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Verification failed');
+    } finally {
+      setVerifying(false);
+    }
+  }
+
   const enrichButton = (
     <button
       className="btn btn-sm btn-primary"
@@ -169,7 +190,8 @@ export function LeadDetailPage() {
           <h1 style={{ marginTop: 6 }}>{lead.person.name}</h1>
           <p>
             {lead.person.title && `${lead.person.title} · `}
-            {lead.institution.name ?? 'Institution unknown'}
+            {lead.institution.name ?? 'Institution unknown'}{' '}
+            <AffiliationNote affiliation={lead.institution.affiliation} institutionName={lead.institution.name} />
           </p>
         </div>
 
@@ -339,7 +361,28 @@ export function LeadDetailPage() {
                 )}
               </dd>
               <dt>Institution</dt>
-              <dd>{lead.institution.name ?? '—'}</dd>
+              <dd>
+                {lead.institution.name ?? <span className="muted">— (not confirmed)</span>}
+                {lead.institution.affiliation && (
+                  <div className="muted small" style={{ marginTop: 4 }}>
+                    {lead.institution.affiliation.status === 'current' && 'Confirmed current'}
+                    {lead.institution.affiliation.status === 'moved' &&
+                      `Moved here from ${lead.institution.affiliation.previousInstitution ?? '?'}`}
+                    {lead.institution.affiliation.status === 'unknown' &&
+                      `Last seen at ${lead.institution.affiliation.previousInstitution ?? '?'}${lead.institution.affiliation.lastSeenYear ? ` (${lead.institution.affiliation.lastSeenYear})` : ''}; no current institute on record`}
+                    {' · '}
+                    {lead.institution.affiliation.source === 'directory' ? 'institute directory' : 'OpenAlex'},{' '}
+                    {formatDate(lead.institution.affiliation.verifiedAt)}
+                    {lead.institution.affiliation.directoryListed === false && ' · not in the institute directory'}
+                  </div>
+                )}
+                {!lead.institution.affiliation && (
+                  <div className="muted small" style={{ marginTop: 4 }}>Not yet verified</div>
+                )}
+                <button className="btn btn-sm" style={{ marginTop: 6 }} onClick={verifyNow} disabled={verifying}>
+                  {verifying ? 'Checking…' : 'Verify now'}
+                </button>
+              </dd>
               <dt>Department</dt>
               <dd>{lead.institution.department ?? '—'}</dd>
               <dt>Country</dt>

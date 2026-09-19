@@ -16,6 +16,16 @@ const COLUMNS: Array<[string, (lead: Lead) => unknown]> = [
   ['Phone', (l) => l.person.phone],
   ['Lab website', (l) => l.person.websiteUrl],
   ['Institution', (l) => l.institution.name],
+  [
+    'Affiliation status',
+    (l) => {
+      const a = l.institution.affiliation;
+      if (!a) return 'unverified';
+      return a.directoryListed === false && a.status === 'current' ? 'current (not in directory)' : a.status;
+    },
+  ],
+  ['Previous institution', (l) => l.institution.affiliation?.previousInstitution],
+  ['Affiliation checked', (l) => l.institution.affiliation?.verifiedAt],
   ['Department', (l) => l.institution.department],
   ['Country', (l) => l.institution.country],
   ['Status', (l) => l.status],

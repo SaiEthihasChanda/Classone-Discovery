@@ -55,12 +55,38 @@ export interface LeadPerson {
   websiteUrl?: string;
 }
 
+/**
+ * Whether the person is still at the institute on the lead, as last checked.
+ *
+ * `moved` means the lead's institution fields now hold the NEW place and
+ * `previousInstitution` the old one; `unknown` means the institution fields
+ * are blank because no current affiliation could be established. Blank is the
+ * honest answer — showing a stale institute sends a salesperson to the wrong
+ * campus.
+ */
+export interface LeadAffiliation {
+  status: 'current' | 'moved' | 'unknown' | 'unverified';
+  verifiedAt: Date;
+  /** OpenAlex author record, or the institute's own directory (web enrichment). */
+  source: 'openalex' | 'directory';
+  /** Most recent year a paper named them at the (previous) institute. */
+  lastSeenYear?: number;
+  previousInstitution?: string;
+  previousInstitutionOpenAlexId?: string;
+  /** Whether the institute directory still listed them, when that was checked. */
+  directoryListed?: boolean;
+  note?: string;
+}
+
 export interface LeadInstitution {
   name?: string;
   normalizedNameKey?: string;
+  /** OpenAlex institution id ("I162827531") when known — exact matching for the affiliation check. */
+  openAlexId?: string;
   department?: string;
   country?: string;
   websiteUrl?: string;
+  affiliation?: LeadAffiliation;
 }
 
 export interface LeadPublication {

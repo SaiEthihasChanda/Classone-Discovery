@@ -81,9 +81,20 @@ const leadSchema = new Schema(
     institution: {
       name: { type: String, trim: true },
       normalizedNameKey: String,
+      openAlexId: String,
       department: String,
       country: String,
       websiteUrl: String,
+      affiliation: {
+        status: { type: String, enum: ['current', 'moved', 'unknown', 'unverified'] },
+        verifiedAt: Date,
+        source: { type: String, enum: ['openalex', 'directory'] },
+        lastSeenYear: Number,
+        previousInstitution: String,
+        previousInstitutionOpenAlexId: String,
+        directoryListed: Boolean,
+        note: String,
+      },
     },
 
     research: {

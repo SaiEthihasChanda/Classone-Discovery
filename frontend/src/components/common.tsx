@@ -65,6 +65,53 @@ export function InstrumentBadge({
   );
 }
 
+/**
+ * Where the person is, as last checked. Nothing is rendered for a confirmed
+ * current affiliation — the institute name already says it — only for the
+ * cases a salesperson must not miss: moved, or nowhere we can confirm.
+ */
+export function AffiliationNote({
+  affiliation,
+  institutionName,
+}: {
+  affiliation?: { status: string; previousInstitution?: string; directoryListed?: boolean; verifiedAt?: string; note?: string };
+  institutionName?: string;
+}) {
+  if (!affiliation) return null;
+  const title = affiliation.note ?? '';
+  if (affiliation.status === 'moved') {
+    return (
+      <span className="badge badge-pending" title={title}>
+        moved{affiliation.previousInstitution ? ` from ${shortInstitute(affiliation.previousInstitution)}` : ''}
+      </span>
+    );
+  }
+  if (affiliation.status === 'unknown') {
+    return (
+      <span className="badge badge-rejected" title={title}>
+        left{affiliation.previousInstitution ? ` ${shortInstitute(affiliation.previousInstitution)}` : ''} · current unknown
+      </span>
+    );
+  }
+  if (affiliation.directoryListed === false && institutionName) {
+    return (
+      <span className="badge badge-pending" title={title}>
+        not in directory
+      </span>
+    );
+  }
+  return null;
+}
+
+/** "Indian Institute of Technology Bombay" → "IIT Bombay", for a badge. */
+export function shortInstitute(name: string): string {
+  return name
+    .replace(/^Indian Institute of Information Technology\b/i, 'IIIT')
+    .replace(/^Indian Institute of Technology\b/i, 'IIT')
+    .replace(/^National Institute of Technology\b/i, 'NIT')
+    .replace(/^Indian Institute of Science\b/i, 'IISc');
+}
+
 export function ErrorBanner({ message }: { message: string }) {
   return <div className="alert alert-error">{message}</div>;
 }

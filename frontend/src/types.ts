@@ -40,9 +40,11 @@ export interface Lead {
   };
   institution: {
     name?: string;
+    openAlexId?: string;
     department?: string;
     country?: string;
     websiteUrl?: string;
+    affiliation?: LeadAffiliation;
   };
   research: {
     summary?: string;
@@ -76,6 +78,18 @@ export interface Lead {
   tags: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** Whether the person is still at the institute on the lead, as last checked. */
+export interface LeadAffiliation {
+  status: 'current' | 'moved' | 'unknown' | 'unverified';
+  verifiedAt: string;
+  source: 'openalex' | 'directory';
+  lastSeenYear?: number;
+  previousInstitution?: string;
+  previousInstitutionOpenAlexId?: string;
+  directoryListed?: boolean;
+  note?: string;
 }
 
 export type InstrumentVendor = 'classone' | 'competitor';

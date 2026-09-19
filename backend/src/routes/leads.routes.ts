@@ -7,6 +7,7 @@ import { getSettings } from '../services/settings/settingsService.js';
 import { leadsToCsv } from '../services/leads/leadCsv.js';
 import { estimateScanCredits, scanLeadInstruments } from '../services/discovery/instrumentScan.js';
 import { enrichLeadFromWeb, enrichLeadsFromWeb } from '../services/leads/webEnrichment.js';
+import { verifyAffiliations, verifyLeadAffiliation } from '../services/leads/affiliationService.js';
 import type { Lead } from '../types/domain.js';
 
 export const leadsRouter = Router();
@@ -267,6 +268,33 @@ leadsRouter.post(
           : {}),
       })),
     });
+  }),
+);
+
+/**
+ * POST /api/leads/verify-affiliations — re-check "still at this institute?"
+ * for many leads (oldest check first). Free at OpenAlex.
+ */
+const bulkVerifySchema = z.object({
+  ids: z.array(z.string()).max(2000).optional(),
+  status: z.enum(['pending_review', 'approved', 'rejected', 'customer']).optional(),
+  brands: z.array(z.string()).optional(),
+  limit: z.number().int().min(1).max(2000).optional(),
+});
+
+leadsRouter.post(
+  '/verify-affiliations',
+  asyncHandler(async (req, res) => {
+    const body = bulkVerifySchema.parse(req.body ?? {});
+    res.json(await verifyAffiliations(body));
+  }),
+);
+
+// POST /api/leads/:id/verify-affiliation — one lead, now.
+leadsRouter.post(
+  '/:id/verify-affiliation',
+  asyncHandler(async (req, res) => {
+    res.json(await verifyLeadAffiliation(req.params.id!));
   }),
 );
 

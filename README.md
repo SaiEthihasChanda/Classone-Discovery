@@ -275,6 +275,27 @@ that one researcher's whole recent output, brand by brand then model by model
 (`POST /api/leads/:id/scan-instruments`, typically 130–400 credits). The look-back window for
 all of this is a setting (default 7 years).
 
+### Is the lead still at that institute?
+
+A paper from 2025 says nothing about January 2026. Every new lead a run creates is checked
+against OpenAlex's **author record** — the institutions named on the author's most recent works
+(`last_known_institutions`) and the years they published from each — via a free single-record
+lookup, so the check costs nothing and runs on every lead. Known leads are re-checked every 30
+days when they resurface, and *Verify affiliations* on the CRM page re-checks the whole filter.
+
+- still named on their latest work → **current**
+- latest work is from elsewhere, and newer than anything from ours → **moved**; the lead shows
+  the **new** institute, with the old one kept as `previousInstitution`
+- nothing recent anywhere → **unknown**; the institute is **blank**, not stale
+
+A concurrent second affiliation (a joint centre) with the same latest year is *not* treated as a
+move. The web-enrichment pass adds the most current signal there is — whether the institute's
+own directory still lists the person — and records it on the lead and in the CSV
+(`Affiliation status`, `Previous institution`, `Affiliation checked`).
+
+Honest limit: OpenAlex learns about a move from the *next* paper, so someone who moved last month
+and has not published since still reads as current until the directory check says otherwise.
+
 ### Per-lead web enrichment (scraper service)
 
 Discovery gives a scored name at an institute; this turns it into a contactable, correctly

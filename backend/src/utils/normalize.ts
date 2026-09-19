@@ -56,6 +56,19 @@ export function normalizeInstitutionKey(name?: string): string | undefined {
   return cleaned || undefined;
 }
 
+/**
+ * Expands the short forms Indian institutes are usually written in, so
+ * "IIT Bombay" and "Indian Institute of Technology Bombay" compare equal.
+ */
+export function expandInstitutionAbbreviations(name: string): string {
+  return name
+    .replace(/\bIIIT\b/gi, 'Indian Institute of Information Technology')
+    .replace(/\bIIT\b/gi, 'Indian Institute of Technology')
+    .replace(/\bNIT\b/gi, 'National Institute of Technology')
+    .replace(/\bIISc\b/g, 'Indian Institute of Science')
+    .replace(/\bIISER\b/g, 'Indian Institute of Science Education and Research');
+}
+
 /** Turns a product name into a stable slug for `Product.productId`. */
 export function slugify(input: string): string {
   return stripDiacritics(input)

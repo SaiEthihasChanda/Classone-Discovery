@@ -30,6 +30,8 @@ export interface DiscoveredCandidate {
   profileUrl?: string;
 
   institutionName?: string;
+  /** OpenAlex institution id when the source knows it — exact matching downstream. */
+  institutionOpenAlexId?: string;
   department?: string;
   country?: string;
 
@@ -98,6 +100,8 @@ export interface DiscoveryRunOptions {
   includeTopicSearch?: boolean;
   /** Test seam: skip the keyword queries. Always on in normal use. */
   includeKeywordSearch?: boolean;
+  /** Check each new lead is still at the institute (free author lookup). Defaults to the setting. */
+  verifyAffiliations?: boolean;
 }
 
 export type DiscoveryRegion = 'indian_institutes' | 'india' | 'global';
@@ -111,6 +115,8 @@ export interface DiscoveryRunSummary {
   enrichedCount: number;
   /** Candidates on which at least one instrument brand was identified. */
   instrumentsDetected: number;
+  /** Leads whose affiliation check found they had moved or could not be placed. */
+  affiliationChanges: number;
   /**
    * OpenAlex's daily allowance ran out during the run. Whatever was fetched
    * before that is included; the UI treats this as a failure to surface, not a

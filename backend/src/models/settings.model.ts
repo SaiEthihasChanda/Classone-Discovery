@@ -69,6 +69,7 @@ const settingsSchema = new Schema(
       instrumentSearchEnabled: { type: Boolean, default: true },
       identifyModels: { type: Boolean, default: true },
       instrumentLookbackYears: { type: Number, default: 7, min: 1, max: 30 },
+      verifyAffiliations: { type: Boolean, default: true },
       // Seeded from data/instrumentBrands.ts on first run; the UI edits it after.
       instrumentBrands: { type: [instrumentBrandSchema], default: [] },
       // Opt-out list of derived keyword groups, so a group added in code applies

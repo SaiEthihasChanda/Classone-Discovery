@@ -44,6 +44,7 @@ const settingsPatchSchema = z.object({
       instrumentSearchEnabled: z.boolean().optional(),
       identifyModels: z.boolean().optional(),
       instrumentLookbackYears: z.number().int().min(1).max(30).optional(),
+      verifyAffiliations: z.boolean().optional(),
       instrumentBrands: z.array(instrumentBrandSchema).max(40).optional(),
       region: z.enum(['indian_institutes', 'india', 'global']).optional(),
       institutionKinds: z.array(z.enum(['IIT', 'NIT', 'IIIT'])).optional(),

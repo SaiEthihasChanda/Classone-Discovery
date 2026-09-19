@@ -560,6 +560,35 @@ function InstrumentBrandsCard({
         first 200 are not missed.
       </p>
 
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontWeight: 400,
+          textTransform: 'none',
+          fontSize: 13,
+          color: 'var(--text)',
+          marginTop: 14,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={draft.discovery.verifyAffiliations}
+          onChange={(e) =>
+            update((d) => ({ ...d, discovery: { ...d.discovery, verifyAffiliations: e.target.checked } }))
+          }
+          style={{ width: 'auto' }}
+        />
+        Check every new lead is still at the institute
+        <span className="muted small">(free OpenAlex author lookup; re-checked every 30 days)</span>
+      </label>
+      <p className="muted small" style={{ margin: '4px 0 0 24px' }}>
+        A paper from 2025 says nothing about today. A lead whose latest work is from elsewhere is
+        shown at the new institute; one with no current institute on record is shown with none,
+        rather than the stale one.
+      </p>
+
       <div className="field" style={{ maxWidth: 260, marginTop: 14 }}>
         <label htmlFor="lookback">Look back (years) for instrument use</label>
         <input

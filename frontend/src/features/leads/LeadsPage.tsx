@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, type BrandOption, type LeadListParams } from '../../api/client';
 import { useAsync } from '../../hooks/useAsync';
 import {
+  AffiliationNote,
   EmptyState,
   ErrorBanner,
   InstrumentBadge,
@@ -118,6 +119,39 @@ export function LeadsPage() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [enriching, setEnriching] = useState(false);
   const [enrichNote, setEnrichNote] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+
+  /** Re-check "still at this institute?" for everything matching the filter. Free. */
+  async function verifyAffiliationsNow() {
+    if (!data) return;
+    if (
+      !window.confirm(
+        `Re-check the current institute of all ${data.total} lead${data.total === 1 ? '' : 's'} matching this filter?\n\n` +
+          'Uses free OpenAlex author lookups — no credits. A lead found to have moved shows its new institute; one that cannot be placed shows none.',
+      )
+    ) {
+      return;
+    }
+    setVerifying(true);
+    setEnrichNote(null);
+    setExportError(null);
+    try {
+      const r = await api.verifyAffiliations({
+        ...(status ? { status } : {}),
+        ...(brands.length > 0 ? { brands } : {}),
+        limit: 2000,
+      });
+      setEnrichNote(
+        `Checked ${r.checked}: ${r.current} still there, ${r.moved} moved, ${r.unknown} could not be placed (institute cleared)` +
+          (r.skipped > 0 ? `; ${r.skipped} skipped (no OpenAlex record).` : '.'),
+      );
+      reload();
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Verification failed');
+    } finally {
+      setVerifying(false);
+    }
+  }
 
   /** Web enrichment for the leads on this page — sequential, a few minutes at most. */
   async function enrichVisible() {
@@ -248,6 +282,14 @@ export function LeadsPage() {
           )}
           <button
             className="btn btn-sm"
+            onClick={verifyAffiliationsNow}
+            disabled={verifying || !data || data.total === 0}
+            title="Re-check whether each lead is still at their institute (free OpenAlex lookups)"
+          >
+            {verifying ? 'Verifying…' : 'Verify affiliations'}
+          </button>
+          <button
+            className="btn btn-sm"
             onClick={enrichVisible}
             disabled={enriching || !data || data.items.length === 0}
             title="Profile page, lab website and open-access papers for the leads on this page — fills blank emails, titles and instruments"
@@ -314,6 +356,10 @@ export function LeadsPage() {
                       {lead.institution.department && (
                         <div className="muted small">{lead.institution.department}</div>
                       )}
+                      <AffiliationNote
+                        affiliation={lead.institution.affiliation}
+                        institutionName={lead.institution.name}
+                      />
                     </td>
                     <td className="small">
                       {lead.person.email ?? <span className="muted">—</span>}

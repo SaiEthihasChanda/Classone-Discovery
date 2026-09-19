@@ -363,6 +363,7 @@ export async function discoverViaOpenAlex(params: {
         orcid: author.orcid?.replace('https://orcid.org/', ''),
         profileUrl: author.id,
         institutionName: institution?.display_name ?? chosen.raw_affiliation_strings?.[0],
+        institutionOpenAlexId: institution?.id?.split('/').pop(),
         country: institution?.country_code,
         publications: work.title
           ? [
@@ -383,6 +384,58 @@ export async function discoverViaOpenAlex(params: {
   }
 
   return candidates;
+}
+
+export interface AuthorAffiliations {
+  authorId: string;
+  /** Institutions named on the author's most recent works. */
+  lastKnown: Array<{ id: string; name: string; country?: string }>;
+  /** Every institution they have published from, with the years. */
+  affiliations: Array<{ id: string; name: string; country?: string; years: number[] }>;
+}
+
+/**
+ * An author's affiliation history — the basis of the "still there?" check.
+ *
+ * A single-record lookup, free at OpenAlex and served from the 24-hour cache
+ * on repeat, so it can run for every lead a discovery run creates.
+ */
+export async function getAuthorAffiliations(authorId: string): Promise<AuthorAffiliations | null> {
+  const id = authorId.split('/').pop();
+  if (!id || !/^A\d+$/.test(id)) return null;
+
+  const url = new URL(`${BASE_URL}/authors/${id}`);
+  url.searchParams.set('select', 'id,display_name,last_known_institutions,affiliations');
+  if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
+
+  interface Record_ {
+    id?: string;
+    last_known_institutions?: OpenAlexInstitution[];
+    affiliations?: Array<{ institution?: OpenAlexInstitution; years?: number[] }>;
+  }
+
+  let record: Record_;
+  try {
+    record = await fetchOpenAlex<Record_>(url.toString(), 0);
+  } catch {
+    return null;
+  }
+
+  const short = (v?: string) => v?.split('/').pop() ?? '';
+  return {
+    authorId: id,
+    lastKnown: (record.last_known_institutions ?? [])
+      .filter((i) => i.id && i.display_name)
+      .map((i) => ({ id: short(i.id), name: i.display_name!, country: i.country_code })),
+    affiliations: (record.affiliations ?? [])
+      .filter((a) => a.institution?.id && a.institution.display_name)
+      .map((a) => ({
+        id: short(a.institution!.id),
+        name: a.institution!.display_name!,
+        country: a.institution!.country_code,
+        years: (a.years ?? []).filter((y): y is number => typeof y === 'number'),
+      })),
+  };
 }
 
 export interface OpenAccessLocation {
@@ -648,6 +701,7 @@ export async function findAuthorByName(
         orcid: author.orcid?.replace('https://orcid.org/', ''),
         profileUrl: author.id,
         institutionName: institution?.display_name,
+        institutionOpenAlexId: institution?.id?.split('/').pop(),
         country: institution?.country_code,
         publications: [],
         grants: [],

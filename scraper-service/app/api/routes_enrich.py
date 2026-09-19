@@ -80,8 +80,15 @@ async def enrich_lead(request: EnrichLeadRequest) -> EnrichLeadResponse:
             except Exception as exc:  # noqa: BLE001
                 out.errors.append(_error(directory_url, exc))
                 continue
+            # Only a directory that parsed into a real list counts as checked;
+            # an empty parse says nothing about whether the person is there.
+            if len(people) >= 3:
+                out.directory_checked = True
+                if out.directory_listed is None:
+                    out.directory_listed = False
             match = next((p for p in people if name_matches(p.name, request.name)), None)
             if match:
+                out.directory_listed = True
                 # The directory row itself often carries the email.
                 if match.email:
                     out.email = match.email

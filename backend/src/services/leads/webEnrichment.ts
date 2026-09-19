@@ -47,6 +47,8 @@ export interface WebEnrichmentResult {
   lead: Lead;
   /** Fields this pass filled in (not ones that were already set). */
   filled: Array<'email' | 'title' | 'department' | 'phone' | 'websiteUrl'>;
+  /** Set when the institute directory was actually read. */
+  affiliation?: { directoryListed: boolean };
   profileUrl?: string;
   websites: string[];
   /** Instruments this pass found, before merging with what was already known. */
@@ -233,6 +235,32 @@ export async function enrichLeadFromWeb(
 
   const instruments = mergeInstruments(found, lead.research.instruments);
 
+  // The directory is the most current affiliation signal there is: an
+  // institute lists its people today, not as of their last paper. Listed →
+  // confirmed current. Dropped → recorded on the lead; the OpenAlex status is
+  // not overridden on that alone (directories fail to parse often), but a
+  // reviewer sees it and the CSV carries it.
+  const affiliationNote: WebEnrichmentResult['affiliation'] = profile?.directory_checked
+    ? { directoryListed: Boolean(profile.directory_listed) }
+    : undefined;
+  if (profile?.directory_checked) {
+    const prior = lead.institution.affiliation;
+    institution.affiliation = profile.directory_listed
+      ? {
+          status: 'current',
+          verifiedAt: new Date(),
+          source: 'directory',
+          lastSeenYear: prior?.lastSeenYear,
+          directoryListed: true,
+          note: 'Listed in the institute faculty directory.',
+        }
+      : {
+          ...(prior ?? { status: 'unverified', verifiedAt: new Date(), source: 'openalex' }),
+          directoryListed: false,
+          note: `Not found in the institute faculty directory${prior?.note ? `. ${prior.note}` : '.'}`,
+        };
+  }
+
   const updated =
     (await repositories.leads.updateById(lead.id, {
       ...(Object.keys(person).length > 0 ? { person } : {}),
@@ -257,6 +285,7 @@ export async function enrichLeadFromWeb(
   return {
     lead: updated,
     filled,
+    affiliation: affiliationNote,
     profileUrl: profile?.profile_url ?? undefined,
     websites: profile?.websites ?? [],
     instrumentsFound: found,
