@@ -335,33 +335,53 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
+/**
+ * Column names accepted, lower-cased, with `_`/`-` read as spaces. The Vidwan
+ * search notebook's export (vidwan_id, name, listing_name, designation,
+ * institute, department, email, phone, website, profile_url, profile_text)
+ * maps without renaming anything.
+ */
 const HEADER_ALIASES: Record<keyof ImportRow, string[]> = {
-  name: ['name', 'expert name', 'faculty name', 'full name'],
+  name: ['name', 'expert name', 'faculty name', 'full name', 'listing name'],
   institutionName: ['institution', 'institute', 'organisation', 'organization', 'affiliation', 'university'],
   department: ['department', 'dept', 'school', 'discipline'],
   title: ['title', 'designation', 'position', 'role'],
   email: ['email', 'e-mail', 'mail'],
   orcid: ['orcid', 'orcid id'],
   profileUrl: ['profile', 'profile url', 'url', 'link', 'vidwan url', 'irins url'],
-  keywords: ['keywords', 'expertise', 'research interests', 'areas', 'subject'],
+  keywords: ['keywords', 'expertise', 'research interests', 'areas', 'subject', 'search queries'],
+  phone: ['phone', 'mobile', 'contact number', 'telephone'],
+  websiteUrl: ['website', 'web site', 'homepage', 'lab website'],
+  profileText: ['profile text', 'bio', 'about', 'listing card text'],
+  sourceId: ['vidwan id', 'irins id', 'id', 'source id'],
 };
 
 /** Maps CSV columns to import fields by header name. */
 export function rowsFromCsv(text: string): ImportRow[] {
   const [header, ...body] = parseCsv(text);
   if (!header) return [];
+  // Aliases are in order of preference per field ("profile text" before
+  // "listing card text"), so each field takes its best-matching column
+  // wherever that column sits in the file.
+  const keys = header.map((h) => h.trim().toLowerCase().replace(/[_-]+/g, ' '));
   const idx: Partial<Record<keyof ImportRow, number>> = {};
-  header.forEach((h, i) => {
-    const key = h.trim().toLowerCase();
-    for (const [field, aliases] of Object.entries(HEADER_ALIASES) as Array<[keyof ImportRow, string[]]>) {
-      if (idx[field] === undefined && aliases.includes(key)) idx[field] = i;
+  for (const [field, aliases] of Object.entries(HEADER_ALIASES) as Array<[keyof ImportRow, string[]]>) {
+    for (const alias of aliases) {
+      const i = keys.indexOf(alias);
+      if (i !== -1) {
+        idx[field] = i;
+        break;
+      }
     }
-  });
+  }
   if (idx.name === undefined || idx.institutionName === undefined) return [];
   return body.map((cells) => {
     const get = (f: keyof ImportRow) => (idx[f] === undefined ? undefined : cells[idx[f]!]?.trim() || undefined);
+    // The notebook's "name" is the profile's own; "listing_name" is the
+    // fallback when the profile page could not be parsed.
+    const name = get('name') ?? '';
     return {
-      name: get('name') ?? '',
+      name,
       institutionName: get('institutionName') ?? '',
       department: get('department'),
       title: get('title'),
@@ -369,6 +389,10 @@ export function rowsFromCsv(text: string): ImportRow[] {
       orcid: get('orcid'),
       profileUrl: get('profileUrl'),
       keywords: get('keywords'),
+      phone: get('phone'),
+      websiteUrl: get('websiteUrl'),
+      profileText: get('profileText'),
+      sourceId: get('sourceId'),
     };
   });
 }

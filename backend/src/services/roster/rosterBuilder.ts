@@ -681,6 +681,12 @@ export interface ImportRow {
   orcid?: string;
   profileUrl?: string;
   keywords?: string;
+  phone?: string;
+  websiteUrl?: string;
+  /** Free text about the person (a profile's visible text) — read by the department gates. */
+  profileText?: string;
+  /** The source's own id for the record (a Vidwan id), for a stable source reference. */
+  sourceId?: string;
 }
 
 export interface ImportSummary {
@@ -718,10 +724,22 @@ export async function importRoster(rows: ImportRow[], sourceType: 'vidwan_import
     d.email = row.email?.trim().toLowerCase() || undefined;
     d.orcid = row.orcid?.match(/\d{4}-\d{4}-\d{4}-\d{3}[\dX]/)?.[0];
     d.profileUrl = row.profileUrl?.trim() || undefined;
+    d.phone = row.phone?.trim() || undefined;
+    d.websiteUrl = /^https?:\/\//i.test(row.websiteUrl?.trim() ?? '') ? row.websiteUrl!.trim() : undefined;
     if (row.keywords) d.keywords.push(...row.keywords.split(/[;,]/).map((k) => k.trim()).filter(Boolean));
+    // A profile's full text is the best evidence the corrosion and
+    // electrochemistry gates get for an imported person; kept as the bio.
+    if (row.profileText?.trim()) d.bio = row.profileText.trim().slice(0, 4000);
     // A named list of faculty is itself evidence of rank when no title is given.
     d.roles.push(d.title ? { ...classifyRole(d.title), source: 'import' } : { category: 'professor', matched: `listed in ${sourceType.replace('_', ' ')}`, source: 'import' });
-    addSource(d, { type: sourceType, recordId: d.profileUrl ?? `${sourceType}:${normalizeNameKey(name)}`, url: d.profileUrl, title: d.title, department: d.department, seenAt: new Date() });
+    addSource(d, {
+      type: sourceType,
+      recordId: row.sourceId?.trim() || d.profileUrl || `${sourceType}:${normalizeNameKey(name)}`,
+      url: d.profileUrl,
+      title: d.title,
+      department: d.department,
+      seenAt: new Date(),
+    });
     const outcome = await decideAndStore(d, institution, { includeInferred: false, orcidPerson: getOrcidPerson });
     summary[outcome] += 1;
   }

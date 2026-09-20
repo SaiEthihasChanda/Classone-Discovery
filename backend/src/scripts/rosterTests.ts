@@ -355,7 +355,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
   // -------------------------------------------------------------------------
   console.log('\nFaculty roster — import, HTTP surface, jobs:\n');
 
-  await check('parseCsv handles quotes and CRLF; rowsFromCsv maps Vidwan-style headers', () => {
+  await check('parseCsv handles quotes and CRLF; rowsFromCsv maps Vidwan-style headers', async () => {
     const rows = parseCsv('Name,Institution\r\n"Kumar, Anil",IIT Bombay\r\nB,"X ""Y"" Z"\r\n');
     assert.deepEqual(rows, [['Name', 'Institution'], ['Kumar, Anil', 'IIT Bombay'], ['B', 'X "Y" Z']]);
     const mapped = rowsFromCsv('Expert Name,Organisation,Designation,Department,Email\nDr. Neha Gupta,IIT Bombay,Professor,Chemistry,ng@iitb.ac.in\n');
@@ -363,6 +363,24 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(mapped[0]!.name, 'Dr. Neha Gupta');
     assert.equal(mapped[0]!.title, 'Professor');
     assert.equal(mapped[0]!.email, 'ng@iitb.ac.in');
+    // The Vidwan search notebook's export, column names as it writes them.
+    const vidwan = rowsFromCsv(
+      'vidwan_id,name,listing_name,designation,institute,department,state,email,phone,website,search_queries,profile_url,listing_card_text,profile_text\n' +
+        '12345,Dr. Ravi Kumar,Ravi Kumar,Professor,Indian Institute of Technology Bombay,Civil Engineering,Maharashtra,rk@civil.iitb.ac.in,+91 22 2576 0000,https://www.civil.iitb.ac.in/~rk,corrosion,https://vidwan.inflibnet.ac.in/profile/12345,card,"Expertise: chloride-induced rebar corrosion in concrete"\n',
+    );
+    assert.equal(vidwan.length, 1);
+    assert.equal(vidwan[0]!.institutionName, 'Indian Institute of Technology Bombay');
+    assert.equal(vidwan[0]!.phone, '+91 22 2576 0000');
+    assert.equal(vidwan[0]!.websiteUrl, 'https://www.civil.iitb.ac.in/~rk');
+    assert.equal(vidwan[0]!.sourceId, '12345');
+    assert.match(vidwan[0]!.profileText ?? '', /rebar corrosion/);
+    const imported = await importRoster(vidwan, 'vidwan_import');
+    assert.equal(imported.created, 1, 'the civil engineer passes the corrosion gate on his Vidwan profile text');
+    const rk = (await repositories.faculty.find({})).find((m) => m.person.name === 'Dr. Ravi Kumar');
+    assert.equal(rk!.department.domain, 'civil');
+    assert.equal(rk!.person.phone, '+91 22 2576 0000');
+    assert.equal(rk!.sources[0]!.recordId, '12345');
+    await repositories.faculty.deleteById(rk!.id);
   });
 
   await check('POST /roster/import applies the same role and department rules', async () => {
