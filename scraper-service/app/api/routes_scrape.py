@@ -16,6 +16,7 @@ from ..core.schemas import (
     FindFacultyPagesResponse,
     FindFacultyPagesResult,
     FoundFacultyPage,
+    VidwanProfilesRequest,
     VidwanRow,
     VidwanSearchRequest,
     VidwanSearchResponse,
@@ -42,7 +43,7 @@ from ..scrapers.news_scraper import (
 )
 from ..scrapers.static_fetcher import FetchError, fetch_page
 from ..scrapers.target_finder import find_department_faculty_pages
-from ..scrapers.vidwan import VidwanBlocked, VidwanClient, looks_like_student
+from ..scrapers.vidwan import VidwanBlocked, VidwanClient, VidwanListing, looks_like_student
 from ..scrapers.tiered_fetcher import fetch_with_escalation
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
@@ -319,6 +320,51 @@ async def vidwan_search(request: VidwanSearchRequest) -> VidwanSearchResponse:
                 continue
             out.rows.append(row)
         out.profiles_fetched = fetched
+    finally:
+        out.requests = client.requests
+        await client.aclose()
+    return out
+
+
+@router.post("/vidwan-profiles", response_model=VidwanSearchResponse)
+async def vidwan_profiles(request: VidwanProfilesRequest) -> VidwanSearchResponse:
+    """Reads a batch of Vidwan profile pages (see `VidwanProfilesRequest`),
+    several at a time under the client's pacing."""
+    out = VidwanSearchResponse(job_id=request.job_id)
+    client = VidwanClient(timeout_sec=request.timeout_sec_per_page, base_url=request.base_url or "https://vidwan.inflibnet.ac.in")
+    listings = [
+        VidwanListing(
+            vidwan_id=ref.vidwan_id, profile_url=ref.profile_url, listing_name=ref.listing_name,
+            designation=ref.designation or "", subject=ref.subject or "", institute=ref.institute or "", card_text=ref.card_text or "",
+        )
+        for ref in request.profiles
+    ]
+    try:
+        results = await client.profiles(listings)
+        for ref, listing, res in zip(request.profiles, listings, results):
+            if isinstance(res, VidwanBlocked):
+                out.blocked = True
+                out.errors.append(ScrapeError(target=ref.profile_url, reason=ScrapeErrorReason.BLOCKED, detail=str(res)))
+                continue
+            if isinstance(res, BaseException):
+                out.rows.append(VidwanRow(vidwan_id=ref.vidwan_id, profile_url=ref.profile_url, name=ref.listing_name, designation=ref.designation, subject=ref.subject, institute=ref.institute, card_text=ref.card_text, card_only=True, error=f"{type(res).__name__}: {res}"))
+                continue
+            p = res
+            out.profiles_fetched += 1
+            out.rows.append(VidwanRow(
+                vidwan_id=p.vidwan_id, profile_url=p.profile_url, name=p.name or ref.listing_name,
+                designation=p.designation or None, subject=ref.subject, institute=p.institute or None,
+                department=p.department or None, years=p.years or None, state=p.state or None,
+                website=p.website or None, expertise=p.expertise or None, orcid=p.orcid or None,
+                scopus_id=p.scopus_id or None, scholar_id=p.scholar_id or None,
+                profile_text=p.profile_text or None, card_text=ref.card_text,
+            ))
+        if out.blocked:
+            # Anything not fetched comes back as its card so the caller can still use it.
+            done = {r.vidwan_id for r in out.rows}
+            for ref in request.profiles:
+                if ref.vidwan_id not in done:
+                    out.rows.append(VidwanRow(vidwan_id=ref.vidwan_id, profile_url=ref.profile_url, name=ref.listing_name, designation=ref.designation, subject=ref.subject, institute=ref.institute, card_text=ref.card_text, card_only=True))
     finally:
         out.requests = client.requests
         await client.aclose()

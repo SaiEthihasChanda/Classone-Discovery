@@ -15,8 +15,8 @@ import { RateLimiter } from './rateLimiter.js';
 const BASE_URL = 'https://pub.orcid.org/v3.0';
 const USER_AGENT = 'ClassOneSalesBot/1.0 (academic lead research)';
 
-/** ORCID's public limit is 24 req/s; half of that keeps a large institute's roster under an hour. */
-const orcidLimiter = new RateLimiter(12);
+/** ORCID's public limit is 24 req/s; this stays under it with room for the affiliation checks. */
+const orcidLimiter = new RateLimiter(20);
 
 export interface OrcidEmployment {
   organization: string;

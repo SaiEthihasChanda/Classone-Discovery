@@ -44,6 +44,8 @@ import {
   isScraperAvailable,
   scrapeFacultyPages,
   searchVidwan,
+  fetchVidwanProfiles,
+  type VidwanRow,
 } from '../../integrations/scraperServiceClient.js';
 import { repositories } from '../../repositories/index.js';
 import type {
@@ -74,6 +76,8 @@ export interface RosterBuildOptions {
   /** Cap per source per institute — tests and dry runs. */
   limitPerSource?: number;
   maxProbesPerInstitution?: number;
+  /** Institutes built concurrently. Default 3. */
+  parallelInstitutions?: number;
 }
 
 export interface RosterBuildDeps {
@@ -86,6 +90,7 @@ export interface RosterBuildDeps {
   scrapePages?: typeof scrapeFacultyPages;
   scraperUp?: typeof isScraperAvailable;
   vidwan?: typeof searchVidwan;
+  vidwanProfiles?: typeof fetchVidwanProfiles;
 }
 
 export interface InstitutionBuildResult {
@@ -228,6 +233,7 @@ export async function buildRoster(
     scrapePages: deps.scrapePages ?? scrapeFacultyPages,
     scraperUp: deps.scraperUp ?? isScraperAvailable,
     vidwan: deps.vidwan ?? searchVidwan,
+    vidwanProfiles: deps.vidwanProfiles ?? fetchVidwanProfiles,
   };
 
   const institutions = options.institutionIds
@@ -244,8 +250,10 @@ export async function buildRoster(
 
   const results: InstitutionBuildResult[] = [];
 
-  for (const [index, institution] of institutions.entries()) {
-    ctx.checkpoint();
+  // Institutes run a few at a time: their pages and Vidwan searches are on
+  // different hosts, so the waits overlap. ORCID and OpenAlex stay under
+  // their global rate limits regardless.
+  const buildOne = async (institution: (typeof institutions)[number], index: number): Promise<void> => {
     const r: InstitutionBuildResult = {
       id: institution.openAlexId,
       name: institution.name,
@@ -431,18 +439,59 @@ export async function buildRoster(
     if (sources.has('vidwan') && scraperUp) {
       ctx.setStage(`${institution.name}: searching Vidwan`, base + span * 0.62);
       try {
+        // Listing first — a handful of requests. Profiles are read afterwards,
+        // in short batches, and only for the people who need one: someone the
+        // other sources already identified with an ORCID and a department
+        // gains nothing from it, and a thousand-person institute would
+        // otherwise take most of an hour.
         const found = await fetchers.vidwan({
           queries: [...names].filter((n) => n.length >= 6),
           institutionTerms: [...names],
+          fetchProfiles: false,
         });
         for (const e of found.errors) {
           r.errors.push(`vidwan: ${e.reason}${e.detail ? ` (${e.detail})` : ''}`);
           ctx.log(`Vidwan: ${e.reason}${e.detail ? ` (${e.detail})` : ''}`, found.blocked ? 'error' : 'warn');
         }
+        const isHere = (row: VidwanRow): boolean => {
+          const k = instKey(row.institute ?? '');
+          if (k && [...keys].some((key) => k === key || k.includes(key) || (key.includes(k) && k.split(' ').length >= 3))) return true;
+          const instText = `${row.institute ?? ''} ${row.card_text ?? ''}`.toLowerCase();
+          return [...names].some((n) => n.length >= 6 && instText.includes(n.toLowerCase()));
+        };
+        const cards = found.rows.filter(
+          (row) => row.name?.trim() && !NOT_A_NAME.test(row.name) && isHere(row) && classifyRole(row.designation).category !== 'excluded',
+        );
+        const needProfile = cards.filter((row) => {
+          const d = index_.find(row.name);
+          return !d || !d.orcid || !d.department;
+        });
+        ctx.log(`Vidwan: ${found.site_total ?? found.listing_profiles} experts match, ${cards.length} faculty-titled cards at the institute, ${needProfile.length} profiles to read`);
+
+        const rows: VidwanRow[] = cards.filter((c) => !needProfile.includes(c));
+        let blocked = found.blocked;
+        for (let i = 0; i < needProfile.length && !blocked; i += 40) {
+          ctx.checkpoint();
+          const batch = needProfile.slice(i, i + 40);
+          ctx.setStage(`${institution.name}: Vidwan profiles ${Math.min(i + batch.length, needProfile.length)}/${needProfile.length}`, base + span * (0.62 + 0.08 * (i / Math.max(1, needProfile.length))));
+          try {
+            const res = await fetchers.vidwanProfiles(batch.map((c) => ({ vidwan_id: c.vidwan_id, profile_url: c.profile_url, listing_name: c.name, designation: c.designation, institute: c.institute, subject: c.subject, card_text: c.card_text })));
+            rows.push(...res.rows);
+            if (res.blocked) {
+              blocked = true;
+              ctx.log('Vidwan refused further requests — the remaining profiles are used from their listing cards', 'error');
+              rows.push(...needProfile.slice(i + batch.length));
+            }
+          } catch (error) {
+            ctx.log(`Vidwan profile batch failed: ${error instanceof Error ? error.message : String(error)} — using listing cards for this batch`, 'warn');
+            rows.push(...batch);
+          }
+        }
+
         let matched = 0;
         let former = 0;
         const thisYear = new Date().getFullYear();
-        for (const row of found.rows) {
+        for (const row of rows) {
           if (!row.name?.trim() || NOT_A_NAME.test(row.name)) continue;
           // "(1986 - 2022)" beside the institute is a position that ended.
           const span = /(\d{4})\s*[-–]\s*(\d{4})/.exec(row.years ?? '');
@@ -450,13 +499,7 @@ export async function buildRoster(
             former += 1;
             continue;
           }
-          // The profile must place them at THIS institute; the search is free text.
-          const instText = `${row.institute ?? ''} ${row.card_text ?? ''}`;
-          const k = instKey(row.institute ?? '');
-          const here =
-            (k && [...keys].some((key) => k === key || k.includes(key) || (key.includes(k) && k.split(' ').length >= 3))) ||
-            [...names].some((n) => n.length >= 6 && instText.toLowerCase().includes(n.toLowerCase()));
-          if (!here) continue;
+          if (!isHere(row)) continue;
           matched += 1;
           let d = (row.orcid && byOrcid.get(row.orcid)) || index_.find(row.name);
           if (d && row.orcid && d.orcid && d.orcid !== row.orcid) d = undefined;
@@ -486,11 +529,7 @@ export async function buildRoster(
         }
         r.vidwanProfiles = matched;
         ctx.count('vidwanProfiles', matched);
-        ctx.log(
-          `Vidwan: ${found.site_total ?? found.listing_profiles} experts match, ${found.listing_profiles} listed over ${found.pages_fetched} pages, ` +
-            `${found.profiles_fetched ?? 0} profiles read, ${matched} at the institute, ${former} former positions skipped` +
-            `${found.blocked ? ' — STOPPED: Vidwan refused further requests' : ''}`,
-        );
+        ctx.log(`Vidwan: ${matched} people merged into the roster, ${former} former positions skipped${blocked ? ' — STOPPED early: Vidwan refused further requests' : ''}`);
       } catch (error) {
         r.errors.push(`vidwan: ${error instanceof Error ? error.message : String(error)}`);
         ctx.log(`Vidwan search failed: ${error instanceof Error ? error.message : String(error)}`, 'warn');
@@ -664,8 +703,21 @@ export async function buildRoster(
       `${institution.name}: ${r.created} added, ${r.updated} updated; dropped ${r.excludedRole} by role, ${r.excludedDomain} by department, ${r.droppedUnconfirmed} unconfirmed`,
     );
     if (r.errors.length > 0) ctx.log(`${institution.name}: ${r.errors.length} problem${r.errors.length === 1 ? '' : 's'} noted above`, 'warn');
-  }
+  };
+  const parallel = Math.min(options.parallelInstitutions ?? 3, institutions.length);
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: parallel }, async () => {
+      while (nextIndex < institutions.length) {
+        ctx.checkpoint();
+        const i = nextIndex;
+        nextIndex += 1;
+        await buildOne(institutions[i]!, i);
+      }
+    }),
+  );
 
+  results.sort((a, b) => options.institutionIds.indexOf(a.id) - options.institutionIds.indexOf(b.id));
   const totals = results.reduce(
     (acc, r) => ({
       orcidRecords: acc.orcidRecords + r.orcidRecords,

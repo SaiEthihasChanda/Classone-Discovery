@@ -378,3 +378,23 @@ class VidwanSearchResponse(BaseModel):
     # Set when Vidwan answered 403/429: the run stopped there and nothing worked around it.
     blocked: bool = False
     errors: list[ScrapeError] = Field(default_factory=list)
+
+
+class VidwanProfileRef(BaseModel):
+    vidwan_id: str
+    profile_url: str
+    listing_name: str = ""
+    designation: Optional[str] = None
+    institute: Optional[str] = None
+    subject: Optional[str] = None
+    card_text: Optional[str] = None
+
+
+class VidwanProfilesRequest(BaseModel):
+    """A short batch of profile pages — Node drives the pace so no single
+    request outlives its timeout on a thousand-person institute."""
+
+    job_id: str
+    profiles: list[VidwanProfileRef] = Field(max_length=80)
+    timeout_sec_per_page: int = Field(default=20, ge=1, le=120)
+    base_url: Optional[str] = None

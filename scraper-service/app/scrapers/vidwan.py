@@ -3,11 +3,12 @@
 Ported from the project owner's `vidwan_search_to_dataframe` notebook on
 20 Sep 2026, at their decision: Vidwan's robots.txt disallows crawlers, and
 the owner chose to use its public search regardless, so this module — alone
-in the service — does not consult the robots gate. What it keeps: one
-session, the per-domain courtesy delay on every request, sequential profile
-fetches, and a hard stop on the first 403/429 (`VidwanBlocked`). What it does
-not do: rotate identities, retry through a browser or proxy, or pretend a
-block did not happen.
+in the service — does not consult the robots gate and paces itself instead:
+one session, at most `vidwan_concurrency` requests in flight, request starts
+at least `vidwan_delay_ms` apart (owner's setting, 20 Sep 2026: 3 / 500 ms),
+and a hard stop on the first 403/429 (`VidwanBlocked`). What it does not do:
+rotate identities, retry through a browser or proxy, or pretend a block did
+not happen.
 
 Verified against the live site on 20 Sep 2026 (Laravel app):
     GET  /profiles                  form: _token, q, subject[], expertise[],
@@ -32,8 +33,10 @@ structure", never to wrong fields.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlparse
 
@@ -41,7 +44,6 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..core.config import settings
-from ..core.robots import robots_gate
 
 BASE_URL = "https://vidwan.inflibnet.ac.in"
 PAGE_SIZE = 48
@@ -246,6 +248,11 @@ class VidwanClient:
 
     def __init__(self, timeout_sec: int | None = None, base_url: str = BASE_URL) -> None:
         self.base_url = base_url.rstrip("/")
+        # Pacing: at most `vidwan_concurrency` requests in flight, and request
+        # STARTS at least `vidwan_delay_ms` apart, whatever the concurrency.
+        self._slots = asyncio.Semaphore(max(1, settings.vidwan_concurrency))
+        self._start_lock = asyncio.Lock()
+        self._last_start = 0.0
         self._client = httpx.AsyncClient(
             timeout=timeout_sec or settings.scraper_timeout_sec,
             follow_redirects=True,
@@ -261,14 +268,23 @@ class VidwanClient:
         await self._client.aclose()
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        # The courtesy delay applies even though the robots rules do not.
-        await robots_gate.wait_for_turn(url)
-        self.requests += 1
-        response = await self._client.request(method, url, **kwargs)
+        async with self._slots:
+            async with self._start_lock:
+                gap = settings.vidwan_delay_ms / 1000.0
+                wait = self._last_start + gap - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                self._last_start = time.monotonic()
+            self.requests += 1
+            response = await self._client.request(method, url, **kwargs)
         if response.status_code in (403, 429):
             raise VidwanBlocked(f"HTTP {response.status_code} from {urlparse(url).netloc}")
         response.raise_for_status()
         return response
+
+    async def profiles(self, listings: list[VidwanListing]) -> list[VidwanProfile | BaseException]:
+        """Several profiles at once, paced by the client; exceptions are returned in place."""
+        return await asyncio.gather(*(self.profile(l) for l in listings), return_exceptions=True)
 
     async def search(self, query: str, *, max_pages: int = 50, on_page=None) -> tuple[list[VidwanListing], int, int | None]:
         """Every listing card for one query: (listings, pages fetched, total the site reports)."""

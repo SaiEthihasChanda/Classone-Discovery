@@ -369,8 +369,10 @@ export interface VidwanSearchResponse {
   errors: ScrapeError[];
 }
 
-/** Sequential, delayed fetches: a few hundred profiles take 10–15 minutes. */
-const VIDWAN_TIMEOUT_MS = 40 * 60_000;
+/** The listing alone: ~25 requests for a large institute. */
+const VIDWAN_LISTING_TIMEOUT_MS = 10 * 60_000;
+/** One profile batch (≤80 pages at ~1.5–2.5 s each). */
+const VIDWAN_BATCH_TIMEOUT_MS = 6 * 60_000;
 
 /**
  * Searches Vidwan (India's national researcher database) for the given
@@ -385,15 +387,27 @@ export async function searchVidwan(payload: {
 }): Promise<VidwanSearchResponse> {
   return fetchJson<VidwanSearchResponse>(`${env.SCRAPER_SERVICE_URL}/scrape/vidwan`, {
     method: 'POST',
-    timeoutMs: VIDWAN_TIMEOUT_MS,
+    timeoutMs: payload.fetchProfiles === false ? VIDWAN_LISTING_TIMEOUT_MS : 40 * 60_000,
     retries: 0,
     body: {
       job_id: randomUUID(),
       queries: payload.queries,
       institution_terms: payload.institutionTerms ?? [],
       max_pages_per_query: payload.maxPagesPerQuery ?? 50,
-      max_profiles: payload.maxProfiles ?? 600,
+      max_profiles: payload.maxProfiles ?? 1500,
       fetch_profiles: payload.fetchProfiles ?? true,
     },
+  });
+}
+
+/** Reads a short batch of Vidwan profile pages; the caller paces the batches. */
+export async function fetchVidwanProfiles(
+  profiles: Array<Pick<VidwanRow, 'vidwan_id' | 'profile_url' | 'designation' | 'institute' | 'subject' | 'card_text'> & { listing_name: string }>,
+): Promise<VidwanSearchResponse> {
+  return fetchJson<VidwanSearchResponse>(`${env.SCRAPER_SERVICE_URL}/scrape/vidwan-profiles`, {
+    method: 'POST',
+    timeoutMs: VIDWAN_BATCH_TIMEOUT_MS,
+    retries: 0,
+    body: { job_id: randomUUID(), profiles },
   });
 }

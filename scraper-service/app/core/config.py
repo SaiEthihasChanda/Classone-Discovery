@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # site refuses the identified agent, set VIDWAN_USER_AGENT in .env — that
     # is the owner's call to make, not the code's default.
     vidwan_user_agent: str = ""
+    # Vidwan pacing, decided by the owner on 20 Sep 2026: a few parallel
+    # connections and a short gap between request starts. Everything else in
+    # this service stays at one request per 1.5 s per domain. A 403/429 still
+    # stops the run outright.
+    vidwan_concurrency: int = 3
+    vidwan_delay_ms: int = 500
 
     # --- Escalation tiers ---------------------------------------------------
     # Tier 2: render pages in a real browser. Needed for client-side-rendered

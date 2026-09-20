@@ -210,6 +210,7 @@ const buildSchema = z.object({
   includeInferredRoles: z.boolean().optional(),
   minWorks: z.number().int().min(1).max(100).optional(),
   maxProbesPerInstitution: z.number().int().min(1).max(80).optional(),
+  parallelInstitutions: z.number().int().min(1).max(6).optional(),
 });
 
 rosterRouter.post(
