@@ -68,6 +68,31 @@ export const DEFAULT_AFFILIATION_REGISTRIES: AffiliationRegistryConfig[] = [
   },
 ];
 
+/**
+ * A person the roster keeps whatever the department gate says — a known
+ * customer, a contact the sales team already has. Matched by ORCID, OpenAlex
+ * author id, or name (within the institute when one is given).
+ */
+export interface AlwaysKeepEntry {
+  name: string;
+  orcid?: string;
+  openAlexAuthorId?: string;
+  /** Institute name, to keep a common name from matching a namesake elsewhere. */
+  institution?: string;
+  note?: string;
+}
+
+/** Seeded with the customer the pilot showed the gate dropping. */
+export const DEFAULT_ALWAYS_KEEP: AlwaysKeepEntry[] = [
+  {
+    name: 'Siddharth Tallur',
+    orcid: '0000-0003-1399-2187',
+    openAlexAuthorId: 'A5072493084',
+    institution: 'Indian Institute of Technology Bombay',
+    note: 'Known PalmSens (Sensit Smart) user; Electrical Engineering, outside the department list',
+  },
+];
+
 export interface AppSettings {
   discovery: {
     /** Additional keyword phrases on top of the derived set. Usually empty. */
@@ -104,6 +129,8 @@ export interface AppSettings {
     affiliationRegistries: AffiliationRegistryConfig[];
     /** Class One's brands and their competitors — searched and detected in text. */
     instrumentBrands: InstrumentBrandConfig[];
+    /** People the roster always keeps, bypassing the department gate. */
+    rosterAlwaysKeep: AlwaysKeepEntry[];
   };
   scraping: {
     allowBrowser: boolean;
@@ -161,6 +188,7 @@ function buildDefaults(): AppSettings {
         ...b,
         searchAliases: b.searchAliases ? [...b.searchAliases] : undefined,
       })),
+      rosterAlwaysKeep: DEFAULT_ALWAYS_KEEP.map((e) => ({ ...e })),
     },
     scraping: {
       allowBrowser: true,
@@ -210,6 +238,16 @@ function toPlain(doc: Record<string, any>): AppSettings {
         Array.isArray(doc.discovery?.instrumentBrands) && doc.discovery.instrumentBrands.length > 0
           ? doc.discovery.instrumentBrands.map(toBrandConfig)
           : DEFAULT_INSTRUMENT_BRANDS.map((b) => ({ ...b })),
+      // Absent on documents written before the list existed → the seed entry.
+      rosterAlwaysKeep: Array.isArray(doc.discovery?.rosterAlwaysKeep)
+        ? doc.discovery.rosterAlwaysKeep.map((e: Record<string, any>) => ({
+            name: String(e.name ?? ''),
+            orcid: e.orcid ? String(e.orcid) : undefined,
+            openAlexAuthorId: e.openAlexAuthorId ? String(e.openAlexAuthorId) : undefined,
+            institution: e.institution ? String(e.institution) : undefined,
+            note: e.note ? String(e.note) : undefined,
+          }))
+        : DEFAULT_ALWAYS_KEEP.map((e) => ({ ...e })),
     },
     scraping: {
       allowBrowser: doc.scraping?.allowBrowser ?? true,

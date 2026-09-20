@@ -60,7 +60,7 @@ import type {
 import { normalizeInstitutionKey, normalizeNameKey } from '../../utils/normalize.js';
 import type { JobContext } from '../jobs/jobRunner.js';
 import { instKey } from '../leads/affiliationService.js';
-import { getSettings, updateSettings } from '../settings/settingsService.js';
+import { getSettings, updateSettings, type AlwaysKeepEntry } from '../settings/settingsService.js';
 import { mergeInstruments } from '../discovery/instrumentDetector.js';
 import { decideDomain, DOMAIN_LABELS, type DomainDecision } from './domains.js';
 import { NameIndex } from './names.js';
@@ -688,7 +688,7 @@ export async function buildRoster(
         continue;
       }
       try {
-        const outcome = await decideAndStore(d, institution, { includeInferred, orcidPerson: fetchers.orcidPerson });
+        const outcome = await decideAndStore(d, institution, { includeInferred, orcidPerson: fetchers.orcidPerson, alwaysKeep: settings.discovery.rosterAlwaysKeep });
         r[outcome] += 1;
       } catch (error) {
         personErrors += 1;
@@ -743,12 +743,46 @@ export async function buildRoster(
 
 export type DraftOutcome = 'created' | 'updated' | 'excludedRole' | 'excludedDomain' | 'droppedUnconfirmed';
 
+/** The always-keep entry this draft matches, if any: by ORCID, OpenAlex id, or name (+ institute). */
+export function alwaysKeepMatch(
+  d: { name: string; orcid?: string; openAlexAuthorId?: string },
+  institution: { name: string },
+  entries: AlwaysKeepEntry[],
+): AlwaysKeepEntry | undefined {
+  const key = normalizeNameKey(d.name);
+  const instK = instKey(institution.name);
+  return entries.find((e) => {
+    if (e.orcid && d.orcid && e.orcid === d.orcid) return true;
+    if (e.openAlexAuthorId && d.openAlexAuthorId && e.openAlexAuthorId === d.openAlexAuthorId) return true;
+    if (!key || normalizeNameKey(e.name) !== key) return false;
+    if (!e.institution) return true;
+    const ek = instKey(e.institution);
+    return Boolean(ek && instK && (ek === instK || ek.includes(instK) || instK.includes(ek)));
+  });
+}
+
 /** The keep/drop decision for one assembled person, and the write that follows. */
 async function decideAndStore(
   d: Draft,
   institution: { openAlexId: string; name: string },
-  opts: { includeInferred: boolean; orcidPerson: typeof getOrcidPerson },
+  opts: { includeInferred: boolean; orcidPerson: typeof getOrcidPerson; alwaysKeep?: AlwaysKeepEntry[] },
 ): Promise<DraftOutcome> {
+  // A person on the always-keep list is stored whatever the gates say; a
+  // student title still wins (the list is about departments, not rank), and
+  // an unknown rank is recorded as a stated one — the user vouched for them.
+  const pinned = alwaysKeepMatch(d, institution, opts.alwaysKeep ?? []);
+  if (pinned) {
+    let role: RoleDecision = { category: 'unknown' };
+    for (const c of d.roles) role = strongerRole(role, c);
+    if (role.category === 'excluded') {
+      await markExcludedIfKnown(d, institution.openAlexId, `role: ${d.title ?? role.matched}`, 'role');
+      return 'excludedRole';
+    }
+    if (!isFacultyRole(role.category)) role = { category: 'professor', matched: 'always-keep list' };
+    const base = decideDomain({ department: d.department, topics: d.topics, text: [...d.keywords, d.bio ?? ''].join(' ') });
+    const outcome = await upsertMember(d, institution, role, { domain: base.domain, kept: true, gate: 'pinned', gateTerms: pinned.note ? [pinned.note] : undefined }, undefined);
+    return outcome;
+  }
   // Role: the strongest stated title wins; no title anywhere → infer from output.
   let role: RoleDecision = { category: 'unknown' };
   for (const candidate of d.roles) role = strongerRole(role, candidate);
@@ -877,7 +911,7 @@ export async function importRoster(rows: ImportRow[], sourceType: 'vidwan_import
       department: d.department,
       seenAt: new Date(),
     });
-    const outcome = await decideAndStore(d, institution, { includeInferred: false, orcidPerson: getOrcidPerson });
+    const outcome = await decideAndStore(d, institution, { includeInferred: false, orcidPerson: getOrcidPerson, alwaysKeep: (await getSettings()).discovery.rosterAlwaysKeep });
     summary[outcome] += 1;
   }
   return summary;
@@ -1013,6 +1047,7 @@ async function upsertMember(
         ...(role.category === 'inferred' ? ['role-inferred'] : []),
         ...(domain.gate === 'electrochemistry' ? ['electrochem-gate'] : []),
         ...(domain.gate === 'instrument' ? ['instrument-owner'] : []),
+        ...(domain.gate === 'pinned' ? ['always-keep'] : []),
       ],
     };
     await repositories.faculty.create(toCreate);
@@ -1029,6 +1064,7 @@ async function upsertMember(
   if (mergedRole.category === 'inferred') tags.add('role-inferred');
   else tags.delete('role-inferred');
   if (domain.gate === 'electrochemistry') tags.add('electrochem-gate');
+  if (domain.gate === 'pinned') tags.add('always-keep');
 
   await repositories.faculty.updateById(existing.id, {
     ...(existing.status === 'excluded' ? { status: 'eligible' as const } : {}),

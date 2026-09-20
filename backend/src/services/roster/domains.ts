@@ -234,7 +234,7 @@ export interface DomainDecision {
   kept: boolean;
   gateTerms?: string[];
   /** Set when a member outside the kept departments passed the electrochemistry gate. */
-  gate?: 'corrosion' | 'electrochemistry' | 'instrument';
+  gate?: 'corrosion' | 'electrochemistry' | 'instrument' | 'pinned';
   reason?: string;
 }
 

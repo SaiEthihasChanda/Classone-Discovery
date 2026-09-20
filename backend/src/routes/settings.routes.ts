@@ -63,6 +63,18 @@ const settingsPatchSchema = z.object({
         .max(10)
         .optional(),
       instrumentBrands: z.array(instrumentBrandSchema).max(40).optional(),
+      rosterAlwaysKeep: z
+        .array(
+          z.object({
+            name: z.string().trim().min(2).max(120),
+            orcid: z.string().trim().regex(/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/, 'ORCID looks like 0000-0000-0000-0000').optional().or(z.literal('')),
+            openAlexAuthorId: z.string().trim().regex(/^A\d{6,}$/, 'OpenAlex author ids look like A5072493084').optional().or(z.literal('')),
+            institution: z.string().trim().max(160).optional().or(z.literal('')),
+            note: z.string().trim().max(200).optional().or(z.literal('')),
+          }),
+        )
+        .max(500)
+        .optional(),
       region: z.enum(['indian_institutes', 'india', 'global']).optional(),
       institutionKinds: z.array(z.enum(['IIT', 'NIT', 'IIIT'])).optional(),
       disabledInstitutionIds: z.array(z.string()).optional(),

@@ -220,7 +220,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(tallur.institution.affiliation?.source, 'vidwan', 'a Vidwan profile at the institute outranks ORCID as the placement source');
     assert.ok(tallur.institution.affiliation?.evidence?.some((e) => e.source === 'orcid'), 'ORCID evidence still recorded');
     assert.equal(tallur.department.domain, 'other', 'a stated EE department is outside the list…');
-    assert.ok(tallur.tags.includes('electrochem-gate'), '…but his electrochemical topics pass the gate');
+    assert.ok(tallur.tags.includes('always-keep') || tallur.tags.includes('electrochem-gate'), '…but the always-keep seed (or his electrochemical topics) keeps him');
     assert.equal(tallur.institution.affiliation?.status, 'current', 'a current ORCID employment settles it at build time');
     assert.equal(tallur.institution.discoveredOpenAlexId, IITB_ID);
   });
@@ -276,6 +276,24 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.deepEqual(v.sources.map((s) => [s.type, s.recordId]), [['vidwan', '9002']]);
     assert.ok(!(await repositories.faculty.find({})).some((m) => m.person.name === 'Elsewhere Person'), 'another institute\'s profile is not added here');
     assert.ok(!(await repositories.faculty.find({})).some((m) => m.person.name === 'Vidwan Scholar'), 'a research scholar on Vidwan is dropped like any other');
+  });
+
+  await check('an always-keep entry bypasses the department gate (a physicist pinned by ORCID is kept)', async () => {
+    const { updateSettings, getSettings, invalidateSettingsCache } = await import('../services/settings/settingsService.js');
+    const before = (await getSettings()).discovery.rosterAlwaysKeep;
+    // Priya Nair (A5000000003) is a physicist the gate drops; pin her by name + institute.
+    await updateSettings({ discovery: { ...(await getSettings()).discovery, rosterAlwaysKeep: [...before, { name: 'Priya Nair', institution: 'IIT Bombay', note: 'known customer' }] } });
+    invalidateSettingsCache();
+    const res = await buildRoster({ institutionIds: [IITB_ID] }, noopCtx(), deps as any);
+    assert.equal(res.institutions[0]!.created, 1, 'exactly the pinned person is added');
+    const nair = (await repositories.faculty.find({})).find((m) => m.person.name === 'Priya Nair');
+    assert.ok(nair, 'kept despite physics topics');
+    assert.equal(nair.status, 'eligible');
+    assert.ok(nair.tags.includes('always-keep'));
+    assert.equal(nair.department.domain, 'other');
+    await repositories.faculty.deleteById(nair.id);
+    await updateSettings({ discovery: { ...(await getSettings()).discovery, rosterAlwaysKeep: before } });
+    invalidateSettingsCache();
   });
 
   await check('a second build is idempotent: nothing created, everything updated', async () => {

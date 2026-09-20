@@ -88,6 +88,16 @@ const settingsSchema = new Schema(
       },
       // Seeded from data/instrumentBrands.ts on first run; the UI edits it after.
       instrumentBrands: { type: [instrumentBrandSchema], default: [] },
+      // People kept on the roster regardless of department (known customers).
+      rosterAlwaysKeep: {
+        type: [
+          new Schema(
+            { name: { type: String, required: true }, orcid: String, openAlexAuthorId: String, institution: String, note: String },
+            { _id: false },
+          ),
+        ],
+        default: undefined,
+      },
       // Opt-out list of derived keyword groups, so a group added in code applies
       // automatically instead of being silently ignored.
       disabledKeywordGroups: { type: [String], default: [] },

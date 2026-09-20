@@ -613,6 +613,50 @@ function InstrumentBrandsCard({
       </label>
 
       <h3 className="section-title" style={{ marginTop: 16 }}>
+        Always keep on the faculty roster
+      </h3>
+      <p className="muted small" style={{ marginTop: 0 }}>
+        Known customers and contacts the roster must never drop, whatever their department. Matched by
+        ORCID or OpenAlex id when given, otherwise by name at the institute. A student title still
+        excludes; this list is about departments, not rank. Applied on the next roster build.
+      </p>
+      {(draft.discovery.rosterAlwaysKeep ?? []).map((e, index) => (
+        <div key={index} style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr 1.4fr 1.4fr auto', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+          {(['name', 'orcid', 'openAlexAuthorId', 'institution', 'note'] as const).map((field) => (
+            <input
+              key={field}
+              value={e[field] ?? ''}
+              placeholder={{ name: 'Name', orcid: 'ORCID', openAlexAuthorId: 'OpenAlex id (A…)', institution: 'Institute', note: 'Why (e.g. PalmSens4 customer)' }[field]}
+              onChange={(ev) =>
+                update((d) => ({
+                  ...d,
+                  discovery: {
+                    ...d.discovery,
+                    rosterAlwaysKeep: (d.discovery.rosterAlwaysKeep ?? []).map((x, i) => (i === index ? { ...x, [field]: ev.target.value } : x)),
+                  },
+                }))
+              }
+              style={{ fontSize: 12 }}
+            />
+          ))}
+          <button
+            className="btn btn-sm"
+            onClick={() =>
+              update((d) => ({ ...d, discovery: { ...d.discovery, rosterAlwaysKeep: (d.discovery.rosterAlwaysKeep ?? []).filter((_, i) => i !== index) } }))
+            }
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <button
+        className="btn btn-sm"
+        onClick={() => update((d) => ({ ...d, discovery: { ...d.discovery, rosterAlwaysKeep: [...(d.discovery.rosterAlwaysKeep ?? []), { name: '' }] } }))}
+      >
+        + Add person
+      </button>
+
+      <h3 className="section-title" style={{ marginTop: 16 }}>
         Researcher registries (deep check)
       </h3>
       <p className="muted small" style={{ marginTop: 0 }}>

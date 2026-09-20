@@ -418,6 +418,7 @@ export interface AppSettings {
     useOrcidForAffiliation: boolean;
     affiliationRegistries: Array<{ key: string; label: string; searchUrl: string; enabled: boolean; note?: string }>;
     instrumentBrands: InstrumentBrandConfig[];
+    rosterAlwaysKeep: Array<{ name: string; orcid?: string; openAlexAuthorId?: string; institution?: string; note?: string }>;
     /** Derived keyword groups switched off; see `DiscoveryConfig.keywordSearch`. */
     disabledKeywordGroups: string[];
   };
