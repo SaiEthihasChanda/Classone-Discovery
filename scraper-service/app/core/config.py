@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # Per-page ceiling so one slow site cannot stall a whole discovery run.
     scraper_timeout_sec: int = 20
 
+    # Identity sent to Vidwan (vidwan.inflibnet.ac.in). Empty = the same
+    # identified User-Agent as everything else. The project owner decided on
+    # 20 Sep 2026 to use Vidwan's public search despite its robots.txt; if the
+    # site refuses the identified agent, set VIDWAN_USER_AGENT in .env — that
+    # is the owner's call to make, not the code's default.
+    vidwan_user_agent: str = ""
+
     # --- Escalation tiers ---------------------------------------------------
     # Tier 2: render pages in a real browser. Needed for client-side-rendered
     # faculty directories, which look identical to empty pages over plain HTTP.

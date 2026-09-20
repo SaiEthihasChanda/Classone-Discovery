@@ -205,7 +205,7 @@ function startOrConflict<T>(kind: JobKind, body: Parameters<typeof startJob<T>>[
 
 const buildSchema = z.object({
   institutionIds: z.array(z.string()).min(1).max(100),
-  sources: z.array(z.enum(['orcid', 'openalex', 'faculty_pages'])).min(1).optional(),
+  sources: z.array(z.enum(['orcid', 'openalex', 'faculty_pages', 'vidwan'])).min(1).optional(),
   includeInferredRoles: z.boolean().optional(),
   minWorks: z.number().int().min(1).max(100).optional(),
   maxProbesPerInstitution: z.number().int().min(1).max(80).optional(),

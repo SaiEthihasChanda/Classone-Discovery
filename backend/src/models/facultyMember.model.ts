@@ -31,7 +31,7 @@ const evidenceSchema = new Schema(
 
 const sourceSchema = new Schema(
   {
-    type: { type: String, enum: ['orcid', 'openalex', 'faculty_page', 'vidwan_import', 'manual'], required: true },
+    type: { type: String, enum: ['orcid', 'openalex', 'faculty_page', 'vidwan', 'vidwan_import', 'manual'], required: true },
     recordId: { type: String, required: true },
     url: String,
     title: String,

@@ -381,7 +381,7 @@ export type FacultyDomain =
  */
 export type FacultyRoleCategory = 'professor' | 'scientist' | 'officer' | 'fellow' | 'inferred' | 'unknown' | 'excluded';
 
-export type FacultySourceType = 'orcid' | 'openalex' | 'faculty_page' | 'vidwan_import' | 'manual';
+export type FacultySourceType = 'orcid' | 'openalex' | 'faculty_page' | 'vidwan' | 'vidwan_import' | 'manual';
 
 export interface FacultySource {
   type: FacultySourceType;

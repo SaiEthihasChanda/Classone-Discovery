@@ -317,3 +317,52 @@ class FindFacultyPagesResult(BaseModel):
 class FindFacultyPagesResponse(BaseModel):
     job_id: str
     results: list[FindFacultyPagesResult] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Vidwan search (national researcher database) for the roster build
+# ---------------------------------------------------------------------------
+
+
+class VidwanSearchRequest(BaseModel):
+    job_id: str
+    # Free-text queries for Vidwan's search box — an institute's names, usually.
+    queries: list[str]
+    max_pages_per_query: int = Field(default=50, ge=1, le=1000)
+    max_profiles: int = Field(default=600, ge=1, le=5000)
+    # Fetch each profile page (designation, department, email…) — the slow part.
+    fetch_profiles: bool = True
+    # Keep only people whose institute or card text contains one of these.
+    institution_terms: list[str] = Field(default_factory=list)
+    timeout_sec_per_page: int = Field(default=20, ge=1, le=120)
+    # Tests only: point the client at a local stand-in for the site.
+    base_url: Optional[str] = None
+
+
+class VidwanRow(BaseModel):
+    vidwan_id: str
+    profile_url: str
+    name: str
+    designation: Optional[str] = None
+    institute: Optional[str] = None
+    department: Optional[str] = None
+    state: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    website: Optional[str] = None
+    expertise: Optional[str] = None
+    orcid: Optional[str] = None
+    profile_text: Optional[str] = None
+    card_text: Optional[str] = None
+    error: Optional[str] = None
+
+
+class VidwanSearchResponse(BaseModel):
+    job_id: str
+    rows: list[VidwanRow] = Field(default_factory=list)
+    listing_profiles: int = 0
+    pages_fetched: int = 0
+    requests: int = 0
+    # Set when Vidwan answered 403/429: the run stopped there and nothing worked around it.
+    blocked: bool = False
+    errors: list[ScrapeError] = Field(default_factory=list)

@@ -203,7 +203,7 @@ export function FacultyPage() {
 
   // Stage controls
   const [institutes, setInstitutes] = useState<string[]>([]);
-  const [sources, setSources] = useState<string[]>(['openalex', 'orcid', 'faculty_pages']);
+  const [sources, setSources] = useState<string[]>(['openalex', 'orcid', 'faculty_pages', 'vidwan']);
   const [includeInferred, setIncludeInferred] = useState(true);
   const [threshold, setThreshold] = useState<number>(40);
   const [identifyInstruments, setIdentifyInstruments] = useState(true);
@@ -267,7 +267,7 @@ export function FacultyPage() {
       setActionError('Choose at least one institute for the build.');
       return;
     }
-    const srcText = sources.map((s) => ({ openalex: 'OpenAlex author lists (≈1 credit per 200 authors)', orcid: 'ORCID (free; one lookup per record, thousands per large institute — minutes to an hour)', faculty_pages: 'institute faculty pages via the scraper (page fetches, robots.txt honoured)' })[s]).join('\n  • ');
+    const srcText = sources.map((s) => ({ openalex: 'OpenAlex author lists (≈1 credit per 200 authors)', orcid: 'ORCID (free; one lookup per record, thousands per large institute — minutes to an hour)', faculty_pages: 'institute faculty pages via the scraper (page fetches, robots.txt honoured)', vidwan: 'Vidwan national researcher database — search by institute name, one profile page per person (sequential, ~1.5 s each; stops if Vidwan refuses)' })[s]).join('\n  • ');
     void run(
       'Roster build',
       `Build the faculty roster for ${institutes.length} institute${institutes.length === 1 ? '' : 's'}:\n${instituteNames(institutes)}\n\nSources:\n  • ${srcText}\n\nKeeps professors, scientists, officers${includeInferred ? ' and OpenAlex-only authors whose record reads as senior (tagged)' : ''} in chemistry, biology, biotech, chemical/biochemical/materials/energy engineering, plus civil/mechanical with corrosion work. Students, postdocs and adjuncts are dropped.\n\nRe-running is safe: known people are updated, not duplicated. Proceed?`,
@@ -417,10 +417,10 @@ export function FacultyPage() {
             <InstitutePicker options={config?.institutions ?? []} selected={institutes} onChange={setInstitutes} />
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-            {(['openalex', 'orcid', 'faculty_pages'] as const).map((s) => (
+            {(['openalex', 'orcid', 'faculty_pages', 'vidwan'] as const).map((s) => (
               <label key={s} className="small" style={{ display: 'flex', gap: 4, alignItems: 'center', fontWeight: 400, textTransform: 'none', margin: 0 }}>
                 <input type="checkbox" checked={sources.includes(s)} onChange={(e) => setSources(e.target.checked ? [...sources, s] : sources.filter((x) => x !== s))} style={{ width: 'auto' }} />
-                {{ openalex: 'OpenAlex', orcid: 'ORCID', faculty_pages: 'Faculty pages' }[s]}
+                {{ openalex: 'OpenAlex', orcid: 'ORCID', faculty_pages: 'Faculty pages', vidwan: 'Vidwan' }[s]}
               </label>
             ))}
             <label className="small" style={{ display: 'flex', gap: 4, alignItems: 'center', fontWeight: 400, textTransform: 'none', margin: 0 }} title="OpenAlex-only authors with no title anywhere, whose publication record reads as an established researcher (≥15 works, h ≥ 8, publishing ≥ 8 years, active). Tagged role-inferred.">

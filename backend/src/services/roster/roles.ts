@@ -16,7 +16,7 @@ export interface RoleDecision {
   /** The pattern that decided it, for the exclusion reason and the audit trail. */
   matched?: string;
   /** Where the title came from; a faculty page is authoritative about today. */
-  source?: 'faculty_page' | 'orcid' | 'import' | 'inferred';
+  source?: 'faculty_page' | 'vidwan' | 'orcid' | 'import' | 'inferred';
 }
 
 /** Student, postdoc and project-staff titles. Checked before anything else. */
@@ -198,7 +198,7 @@ export function strongerRole(a: RoleDecision, b: RoleDecision): RoleDecision {
   // entry can be years stale ("PhD student", never closed). So a faculty
   // title from a page beats an exclusion from ORCID, while an exclusion from
   // the page itself ("Research Scholars" section) beats everything.
-  const isPage = (r: RoleDecision) => r.source === 'faculty_page';
+  const isPage = (r: RoleDecision) => r.source === 'faculty_page' || r.source === 'vidwan';
   const isFacultyTitle = (r: RoleDecision) => ['professor', 'scientist', 'officer', 'fellow'].includes(r.category);
   if (isPage(a) && isFacultyTitle(a) && b.category === 'excluded' && !isPage(b)) return a;
   if (isPage(b) && isFacultyTitle(b) && a.category === 'excluded' && !isPage(a)) return b;

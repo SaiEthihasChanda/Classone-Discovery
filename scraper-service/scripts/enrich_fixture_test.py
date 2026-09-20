@@ -138,7 +138,38 @@ MEMS_PEOPLE = """<html><body><h1>People</h1>
 
 DIRECTORY_WITHOUT = DIRECTORY.replace('<div class="faculty-card"><h3><a href="/people/asha-rao">Dr. Asha Rao</a></h3><p>Professor</p><p>Electrochemistry</p></div>', '')
 
+VIDWAN_FORM = """<html><head><meta name="csrf-token" content="tok123"></head><body>
+<form method="POST" action="/profiles/apply-filters"><input type="hidden" name="_token" value="tok123"><input name="q"></form>
+</body></html>"""
+
+VIDWAN_PAGE1 = """<html><body>
+<div class="card"><h5><a href="/profile/1001">Dr. Asha Rao</a></h5><p>Professor</p><p>Indian Institute of Technology Bombay</p><a href="/profile/1001">View Profile</a></div>
+<div class="card"><h5><a href="/profile/1002">Mr. Rohan Das</a></h5><p>Research Scholar</p><p>Indian Institute of Technology Bombay</p><a href="/profile/1002">View Profile</a></div>
+<ul class="pagination"><li><a href="/profiles?page=1">1</a></li><li><a href="/profiles?page=2">2</a></li></ul>
+</body></html>"""
+
+VIDWAN_PAGE2 = """<html><body>
+<div class="card"><h5><a href="/profile/1003">Dr. Meera Iyer</a></h5><p>Associate Professor</p><p>National Institute of Technology Karnataka</p><a href="/profile/1003">View Profile</a></div>
+<ul class="pagination"><li><a href="/profiles?page=1">1</a></li><li><a href="/profiles?page=2">2</a></li></ul>
+</body></html>"""
+
+VIDWAN_P1001 = """<html><body><h2>Dr. Asha Rao</h2>
+<table><tr><th>Designation</th><td>Professor</td></tr><tr><th>Institute</th><td>Indian Institute of Technology Bombay</td></tr>
+<tr><th>Department</th><td>Department of Chemistry</td></tr><tr><th>Email</th><td><a href="mailto:asha.rao@iitb.ac.in">asha.rao@iitb.ac.in</a></td></tr>
+<tr><th>Phone</th><td>+91 22 2576 7890</td></tr></table>
+<p><strong>Expertise:</strong> Electrochemical biosensors; Corrosion</p>
+<p>ORCID: 0000-0002-1825-0097</p></body></html>"""
+
+VIDWAN_P1002 = """<html><body><h2>Rohan Das</h2><dl><dt>Designation</dt><dd>Research Scholar</dd><dt>Institute</dt><dd>Indian Institute of Technology Bombay</dd></dl></body></html>"""
+VIDWAN_P1003 = """<html><body><h2>Meera Iyer</h2><dl><dt>Designation</dt><dd>Associate Professor</dd><dt>Institute</dt><dd>National Institute of Technology Karnataka</dd></dl></body></html>"""
+
 ROUTES: dict[str, tuple[str, bytes]] = {
+    "/profiles": ("text/html", VIDWAN_FORM.encode()),
+    "/profiles?page=1": ("text/html", VIDWAN_PAGE1.encode()),
+    "/profiles?page=2": ("text/html", VIDWAN_PAGE2.encode()),
+    "/profile/1001": ("text/html", VIDWAN_P1001.encode()),
+    "/profile/1002": ("text/html", VIDWAN_P1002.encode()),
+    "/profile/1003": ("text/html", VIDWAN_P1003.encode()),
     "/registry/search": ("text/html", REGISTRY_SEARCH.encode()),
     "/registry/profile/42": ("text/html", REGISTRY_PROFILE.encode()),
     "/registry/profile/999": ("text/html", REGISTRY_PROFILE_OTHER.encode()),
@@ -166,8 +197,21 @@ ROUTES: dict[str, tuple[str, bytes]] = {
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        # Vidwan's filter form: a POST that redirects to the first listing page.
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode() if length else ""
+        if self.path == "/profiles/apply-filters" and "_token=tok123" in body:
+            self.send_response(302)
+            self.send_header("Location", "/profiles?page=1")
+            self.end_headers()
+            return
+        self.send_response(419)
+        self.end_headers()
+
     def do_GET(self):  # noqa: N802
-        path = self.path.split("?")[0]
+        # Listing pages are keyed with their query string; everything else without.
+        path = self.path if self.path in ROUTES else self.path.split("?")[0]
         if path not in ROUTES:
             self.send_response(404)
             self.end_headers()
@@ -284,6 +328,22 @@ def main() -> int:
         "directory_urls": [f"{BASE}/faculty"], "registries": [], "timeout_sec_per_page": 10, "allow_browser": False,
     })
     check("directory that still lists the person → listed, with a directory hit", r.get("directory_listed") is True and any(h["source"] == "directory" for h in r.get("hits", [])), str(r))
+
+    print("\n/scrape/vidwan — CSRF → filter POST → paginated listing → profiles")
+    r = post("http://localhost:8000/scrape/vidwan", {
+        "job_id": "t6", "queries": ["Indian Institute of Technology Bombay"], "max_pages_per_query": 10,
+        "max_profiles": 20, "fetch_profiles": True, "institution_terms": ["Indian Institute of Technology Bombay", "IIT Bombay"],
+        "timeout_sec_per_page": 10, "base_url": BASE,
+    })
+    rows = {x["vidwan_id"]: x for x in r.get("rows", [])}
+    check("followed pagination: 2 listing pages", r.get("pages_fetched") == 2, str(r.get("pages_fetched")))
+    check("3 profiles listed, 2 kept after the institute filter", r.get("listing_profiles") == 3 and set(rows) == {"1001", "1002"}, str(list(rows)))
+    a = rows.get("1001", {})
+    check("profile fields read from the table", a.get("designation") == "Professor" and a.get("department") == "Department of Chemistry", str(a))
+    check("email from mailto, phone from the table", a.get("email") == "asha.rao@iitb.ac.in" and "2576 7890" in (a.get("phone") or ""), str(a))
+    check("expertise and ORCID picked up", "biosensors" in (a.get("expertise") or "") and a.get("orcid") == "0000-0002-1825-0097", str(a))
+    check("honorific stripped from the name", a.get("name") == "Asha Rao", str(a.get("name")))
+    check("not blocked, no errors", r.get("blocked") is False and not r.get("errors"), json.dumps(r.get("errors")))
 
     server.shutdown()
     print(f"\n{'ALL PASSED' if failures == 0 else f'{failures} FAILED'}")

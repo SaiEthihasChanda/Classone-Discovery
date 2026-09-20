@@ -326,3 +326,64 @@ export async function findFacultyPages(payload: {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Vidwan search for the roster build
+// ---------------------------------------------------------------------------
+
+export interface VidwanRow {
+  vidwan_id: string;
+  profile_url: string;
+  name: string;
+  designation?: string | null;
+  institute?: string | null;
+  department?: string | null;
+  state?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  website?: string | null;
+  expertise?: string | null;
+  orcid?: string | null;
+  profile_text?: string | null;
+  card_text?: string | null;
+  error?: string | null;
+}
+
+export interface VidwanSearchResponse {
+  job_id: string;
+  rows: VidwanRow[];
+  listing_profiles: number;
+  pages_fetched: number;
+  requests: number;
+  blocked: boolean;
+  errors: ScrapeError[];
+}
+
+/** Sequential, delayed fetches: a few hundred profiles take 10–15 minutes. */
+const VIDWAN_TIMEOUT_MS = 40 * 60_000;
+
+/**
+ * Searches Vidwan (India's national researcher database) for the given
+ * queries — an institute's names — and reads each matching profile.
+ */
+export async function searchVidwan(payload: {
+  queries: string[];
+  institutionTerms?: string[];
+  maxPagesPerQuery?: number;
+  maxProfiles?: number;
+  fetchProfiles?: boolean;
+}): Promise<VidwanSearchResponse> {
+  return fetchJson<VidwanSearchResponse>(`${env.SCRAPER_SERVICE_URL}/scrape/vidwan`, {
+    method: 'POST',
+    timeoutMs: VIDWAN_TIMEOUT_MS,
+    retries: 0,
+    body: {
+      job_id: randomUUID(),
+      queries: payload.queries,
+      institution_terms: payload.institutionTerms ?? [],
+      max_pages_per_query: payload.maxPagesPerQuery ?? 50,
+      max_profiles: payload.maxProfiles ?? 600,
+      fetch_profiles: payload.fetchProfiles ?? true,
+    },
+  });
+}

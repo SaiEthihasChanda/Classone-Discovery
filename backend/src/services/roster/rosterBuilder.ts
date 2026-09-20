@@ -43,6 +43,7 @@ import {
   findFacultyPages,
   isScraperAvailable,
   scrapeFacultyPages,
+  searchVidwan,
 } from '../../integrations/scraperServiceClient.js';
 import { repositories } from '../../repositories/index.js';
 import type {
@@ -60,7 +61,7 @@ import { decideDomain, DOMAIN_LABELS, type DomainDecision } from './domains.js';
 import { NameIndex } from './names.js';
 import { classifyRole, inferSeniority, isFacultyRole, strongerRole, type RoleDecision } from './roles.js';
 
-export type RosterSource = 'orcid' | 'openalex' | 'faculty_pages';
+export type RosterSource = 'orcid' | 'openalex' | 'faculty_pages' | 'vidwan';
 
 export interface RosterBuildOptions {
   /** OpenAlex ids from `data/indianInstitutions.ts`. */
@@ -84,6 +85,7 @@ export interface RosterBuildDeps {
   findPages?: typeof findFacultyPages;
   scrapePages?: typeof scrapeFacultyPages;
   scraperUp?: typeof isScraperAvailable;
+  vidwan?: typeof searchVidwan;
 }
 
 export interface InstitutionBuildResult {
@@ -94,6 +96,7 @@ export interface InstitutionBuildResult {
   openAlexAuthors: number;
   pagesFound: number;
   pagePeople: number;
+  vidwanProfiles: number;
   created: number;
   updated: number;
   excludedRole: number;
@@ -173,6 +176,8 @@ interface Draft {
   sources: FacultySource[];
   /** ORCID says they are employed here now — affiliation is settled at build time. */
   orcidCurrentHere?: OrcidEmployment;
+  /** Vidwan profile places them at this institute — outranks ORCID in the precedence rule. */
+  vidwanHere?: { url: string; designation?: string };
 }
 
 function newDraft(name: string): Draft {
@@ -211,7 +216,7 @@ export async function buildRoster(
   deps: RosterBuildDeps = {},
 ): Promise<RosterBuildSummary> {
   const startedAt = Date.now();
-  const sources = new Set<RosterSource>(options.sources ?? ['openalex', 'orcid', 'faculty_pages']);
+  const sources = new Set<RosterSource>(options.sources ?? ['openalex', 'orcid', 'faculty_pages', 'vidwan']);
   const includeInferred = options.includeInferredRoles ?? true;
   const fetchers = {
     institutionProfile: deps.institutionProfile ?? getInstitutionProfile,
@@ -222,6 +227,7 @@ export async function buildRoster(
     findPages: deps.findPages ?? findFacultyPages,
     scrapePages: deps.scrapePages ?? scrapeFacultyPages,
     scraperUp: deps.scraperUp ?? isScraperAvailable,
+    vidwan: deps.vidwan ?? searchVidwan,
   };
 
   const institutions = options.institutionIds
@@ -230,9 +236,10 @@ export async function buildRoster(
   if (institutions.length === 0) throw new Error('No known institutes selected');
 
   const settings = await getSettings();
-  const scraperUp = sources.has('faculty_pages') ? await fetchers.scraperUp() : false;
-  if (sources.has('faculty_pages') && !scraperUp) {
-    ctx.log('Scraper service is not running — faculty pages skipped for every institute', 'warn');
+  const needsScraper = sources.has('faculty_pages') || sources.has('vidwan');
+  const scraperUp = needsScraper ? await fetchers.scraperUp() : false;
+  if (needsScraper && !scraperUp) {
+    ctx.log('Scraper service is not running — faculty pages and Vidwan skipped for every institute', 'warn');
   }
 
   const results: InstitutionBuildResult[] = [];
@@ -247,6 +254,7 @@ export async function buildRoster(
       openAlexAuthors: 0,
       pagesFound: 0,
       pagePeople: 0,
+      vidwanProfiles: 0,
       created: 0,
       updated: 0,
       excludedRole: 0,
@@ -414,6 +422,67 @@ export async function buildRoster(
         });
       }
       ctx.log(`ORCID: ${r.orcidCurrentHere} with a current employment at the institute`);
+    }
+
+    // --- 2b. Vidwan: the national researcher database, searched by the
+    // institute's names. A maintained profile naming the institute is the
+    // most current placement short of the institute's own page, and it
+    // carries designation, department and often email and phone.
+    if (sources.has('vidwan') && scraperUp) {
+      ctx.setStage(`${institution.name}: searching Vidwan`, base + span * 0.62);
+      try {
+        const found = await fetchers.vidwan({
+          queries: [...names].filter((n) => n.length >= 6),
+          institutionTerms: [...names],
+        });
+        for (const e of found.errors) {
+          r.errors.push(`vidwan: ${e.reason}${e.detail ? ` (${e.detail})` : ''}`);
+          ctx.log(`Vidwan: ${e.reason}${e.detail ? ` (${e.detail})` : ''}`, found.blocked ? 'error' : 'warn');
+        }
+        let matched = 0;
+        for (const row of found.rows) {
+          if (!row.name?.trim() || NOT_A_NAME.test(row.name)) continue;
+          // The profile must place them at THIS institute; the search is free text.
+          const instText = `${row.institute ?? ''} ${row.card_text ?? ''}`;
+          const k = instKey(row.institute ?? '');
+          const here =
+            (k && [...keys].some((key) => k === key || k.includes(key) || (key.includes(k) && k.split(' ').length >= 3))) ||
+            [...names].some((n) => n.length >= 6 && instText.toLowerCase().includes(n.toLowerCase()));
+          if (!here) continue;
+          matched += 1;
+          let d = (row.orcid && byOrcid.get(row.orcid)) || index_.find(row.name);
+          if (d && row.orcid && d.orcid && d.orcid !== row.orcid) d = undefined;
+          if (!d) d = register(newDraft(row.name.trim()));
+          if (row.orcid && !d.orcid) attachOrcid(d, row.orcid);
+          d.vidwanHere = { url: row.profile_url, designation: row.designation ?? undefined };
+          d.roles.push(
+            row.designation
+              ? { ...classifyRole(row.designation), source: 'vidwan' }
+              : { category: 'unknown', source: 'vidwan' },
+          );
+          if (row.designation && !d.title) d.title = row.designation;
+          if (row.department && !d.department) d.department = row.department;
+          if (row.email && !d.email) d.email = row.email.toLowerCase();
+          if (row.phone && !d.phone) d.phone = row.phone;
+          if (row.website && /^https?:\/\//i.test(row.website) && !d.websiteUrl) d.websiteUrl = row.website;
+          if (row.expertise) d.keywords.push(...row.expertise.split(/[;,|]/).map((x) => x.trim()).filter(Boolean));
+          if (row.profile_text && !d.bio) d.bio = row.profile_text.slice(0, 4000);
+          addSource(d, {
+            type: 'vidwan',
+            recordId: row.vidwan_id,
+            url: row.profile_url,
+            title: row.designation ?? undefined,
+            department: row.department ?? undefined,
+            seenAt: new Date(),
+          });
+        }
+        r.vidwanProfiles = matched;
+        ctx.count('vidwanProfiles', matched);
+        ctx.log(`Vidwan: ${found.listing_profiles} search results, ${found.rows.length} profiles read, ${matched} at the institute${found.blocked ? ' — STOPPED: Vidwan refused further requests' : ''}`);
+      } catch (error) {
+        r.errors.push(`vidwan: ${error instanceof Error ? error.message : String(error)}`);
+        ctx.log(`Vidwan search failed: ${error instanceof Error ? error.message : String(error)}`, 'warn');
+      }
     }
 
     // --- 3. Faculty pages ---------------------------------------------------
@@ -592,6 +661,7 @@ export async function buildRoster(
       openAlexAuthors: acc.openAlexAuthors + r.openAlexAuthors,
       pagesFound: acc.pagesFound + r.pagesFound,
       pagePeople: acc.pagePeople + r.pagePeople,
+      vidwanProfiles: acc.vidwanProfiles + r.vidwanProfiles,
       created: acc.created + r.created,
       updated: acc.updated + r.updated,
       excludedRole: acc.excludedRole + r.excludedRole,
@@ -599,7 +669,7 @@ export async function buildRoster(
       droppedUnconfirmed: acc.droppedUnconfirmed + r.droppedUnconfirmed,
       errors: acc.errors + r.errors.length,
     }),
-    { orcidRecords: 0, orcidCurrentHere: 0, openAlexAuthors: 0, pagesFound: 0, pagePeople: 0, created: 0, updated: 0, excludedRole: 0, excludedDomain: 0, droppedUnconfirmed: 0, errors: 0 },
+    { orcidRecords: 0, orcidCurrentHere: 0, openAlexAuthors: 0, pagesFound: 0, pagePeople: 0, vidwanProfiles: 0, created: 0, updated: 0, excludedRole: 0, excludedDomain: 0, droppedUnconfirmed: 0, errors: 0 },
   );
   return { institutions: results, totals, durationMs: Date.now() - startedAt };
 }
@@ -799,21 +869,29 @@ async function upsertMember(
     email: d.email,
   });
 
-  const affiliation: LeadAffiliation | undefined = d.orcidCurrentHere
-    ? {
-        status: 'current',
-        verifiedAt: now,
-        source: 'orcid',
-        evidence: [
-          {
-            source: 'orcid',
-            institution: institution.name,
-            current: true,
-            url: d.orcid ? `https://orcid.org/${d.orcid}` : undefined,
-            detail: `ORCID employment${d.orcidCurrentHere.role ? ` as ${d.orcidCurrentHere.role}` : ''}${d.orcidCurrentHere.startYear ? ` since ${d.orcidCurrentHere.startYear}` : ''}, no end date`,
-          },
-        ],
-      }
+  const evidence: NonNullable<LeadAffiliation['evidence']> = [];
+  if (d.vidwanHere) {
+    evidence.push({
+      source: 'vidwan',
+      institution: institution.name,
+      current: true,
+      url: d.vidwanHere.url,
+      detail: `Vidwan profile${d.vidwanHere.designation ? ` as ${d.vidwanHere.designation}` : ''} at the institute`,
+    });
+  }
+  if (d.orcidCurrentHere) {
+    evidence.push({
+      source: 'orcid',
+      institution: institution.name,
+      current: true,
+      url: d.orcid ? `https://orcid.org/${d.orcid}` : undefined,
+      detail: `ORCID employment${d.orcidCurrentHere.role ? ` as ${d.orcidCurrentHere.role}` : ''}${d.orcidCurrentHere.startYear ? ` since ${d.orcidCurrentHere.startYear}` : ''}, no end date`,
+    });
+  }
+  // Same precedence as the verification step: Vidwan (maintained profile)
+  // over ORCID (self-entered employment).
+  const affiliation: LeadAffiliation | undefined = evidence.length
+    ? { status: 'current', verifiedAt: now, source: evidence[0]!.source, evidence }
     : undefined;
 
   const topics = d.topics.map((t) => t.name);

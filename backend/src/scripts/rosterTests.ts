@@ -159,7 +159,14 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     '0000-0002-0001-0001': { orcid: '0000-0002-0001-0001', emails: ['stallur@ee.iitb.ac.in'], keywords: ['electrochemical sensors'], urls: [{ url: 'https://www.ee.iitb.ac.in/~stallur' }] },
   };
 
+  const vidwanRows = [
+    { vidwan_id: '9001', profile_url: 'https://vidwan.inflibnet.ac.in/profile/9001', name: 'Siddharth Tallur', designation: 'Associate Professor', institute: 'Indian Institute of Technology Bombay', department: 'Electrical Engineering', phone: '+91 22 2576 9999', expertise: 'Electrochemical sensors; MEMS' },
+    { vidwan_id: '9002', profile_url: 'https://vidwan.inflibnet.ac.in/profile/9002', name: 'Vidwan Only', designation: 'Professor', institute: 'IIT Bombay', department: 'Chemistry', email: 'vonly@chem.iitb.ac.in' },
+    { vidwan_id: '9003', profile_url: 'https://vidwan.inflibnet.ac.in/profile/9003', name: 'Elsewhere Person', designation: 'Professor', institute: 'National Institute of Technology Karnataka', department: 'Chemistry' },
+    { vidwan_id: '9004', profile_url: 'https://vidwan.inflibnet.ac.in/profile/9004', name: 'Vidwan Scholar', designation: 'Research Scholar', institute: 'IIT Bombay', department: 'Chemistry' },
+  ];
   const deps = {
+    vidwan: async () => ({ job_id: 'v', rows: vidwanRows, listing_profiles: 4, pages_fetched: 1, requests: 6, blocked: false, errors: [] }),
     institutionProfile: async () => ({ id: IITB_ID, name: 'Indian Institute of Technology Bombay', ror: 'https://ror.org/02qyf5152', homepageUrl: 'https://www.iitb.ac.in', acronyms: ['IITB'], alternatives: [] }),
     listAuthors: async (p: { limit?: number }) => ({ authors: authors.slice(0, p.limit ?? authors.length), total: authors.length }),
     searchOrcid: async () => ({ hits: orcidHits, total: orcidHits.length, truncated: false }),
@@ -195,8 +202,9 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(r.orcidCurrentHere, 5, 'the alum with an ended employment is not current');
     assert.equal(r.pagesFound, 1);
     assert.equal(r.pagePeople, 3);
-    assert.equal(r.created, 6, `created ${r.created}: Tallur, Anil Kumar, Rahul Verma, Kavita Rao, Civil Guy, Meena Iyer`);
-    assert.equal(r.excludedRole, 2, 'the PhD student and the research scholar');
+    assert.equal(r.vidwanProfiles, 3, 'three Vidwan profiles at the institute; the NIT one is ignored');
+    assert.equal(r.created, 7, `created ${r.created}: Tallur, Anil Kumar, Rahul Verma, Kavita Rao, Civil Guy, Meena Iyer, Vidwan Only`);
+    assert.equal(r.excludedRole, 3, 'the PhD student, the research scholar and the Vidwan scholar');
     assert.equal(r.excludedDomain, 2, 'the physicist and the bridge engineer');
     assert.equal(r.droppedUnconfirmed, 0);
   });
@@ -205,12 +213,14 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     const tallur = await repositories.faculty.findSamePerson({ orcid: '0000-0002-0001-0001', normalizedNameKey: '' });
     assert.ok(tallur);
     assert.equal(tallur.person.openAlexAuthorId, 'A5000000001');
-    assert.deepEqual(tallur.sources.map((s) => s.type).sort(), ['openalex', 'orcid']);
+    assert.deepEqual(tallur.sources.map((s) => s.type).sort(), ['openalex', 'orcid', 'vidwan']);
     assert.equal(tallur.role.category, 'professor');
+    assert.equal(tallur.person.phone, '+91 22 2576 9999', 'phone from the Vidwan profile');
+    assert.equal(tallur.institution.affiliation?.source, 'vidwan', 'a Vidwan profile at the institute outranks ORCID as the placement source');
+    assert.ok(tallur.institution.affiliation?.evidence?.some((e) => e.source === 'orcid'), 'ORCID evidence still recorded');
     assert.equal(tallur.department.domain, 'other', 'a stated EE department is outside the list…');
     assert.ok(tallur.tags.includes('electrochem-gate'), '…but his electrochemical topics pass the gate');
     assert.equal(tallur.institution.affiliation?.status, 'current', 'a current ORCID employment settles it at build time');
-    assert.equal(tallur.institution.affiliation?.source, 'orcid');
     assert.equal(tallur.institution.discoveredOpenAlexId, IITB_ID);
   });
 
@@ -256,11 +266,22 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(tallur!.status, 'eligible', 'the thinner twin must not downgrade him');
   });
 
+  await check('a Vidwan-only professor is a member with the Vidwan id as source record', async () => {
+    const v = (await repositories.faculty.find({})).find((m) => m.person.name === 'Vidwan Only');
+    assert.ok(v, 'created from Vidwan alone');
+    assert.equal(v.role.category, 'professor');
+    assert.equal(v.department.domain, 'chemistry');
+    assert.equal(v.person.email, 'vonly@chem.iitb.ac.in');
+    assert.deepEqual(v.sources.map((s) => [s.type, s.recordId]), [['vidwan', '9002']]);
+    assert.ok(!(await repositories.faculty.find({})).some((m) => m.person.name === 'Elsewhere Person'), 'another institute\'s profile is not added here');
+    assert.ok(!(await repositories.faculty.find({})).some((m) => m.person.name === 'Vidwan Scholar'), 'a research scholar on Vidwan is dropped like any other');
+  });
+
   await check('a second build is idempotent: nothing created, everything updated', async () => {
     const again = await buildRoster({ institutionIds: [IITB_ID] }, noopCtx(), deps as any);
     assert.equal(again.institutions[0]!.created, 0);
-    assert.equal(again.institutions[0]!.updated, 6);
-    assert.equal(await repositories.faculty.count(), 6);
+    assert.equal(again.institutions[0]!.updated, 7);
+    assert.equal(await repositories.faculty.count(), 7);
   });
 
   // -------------------------------------------------------------------------
@@ -348,7 +369,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(lead!.person.email, 'stallur@ee.iitb.ac.in');
     assert.equal(lead!.person.websiteUrl, 'https://www.ee.iitb.ac.in/~stallur');
     assert.equal(lead!.person.title, 'Associate Professor');
-    assert.deepEqual(missingFields(lead!), ['phone'], 'phone is not on ORCID');
+    assert.deepEqual(missingFields(lead!), [], 'phone came from the Vidwan profile at build time');
     assert.equal(tallur!.person.email, 'stallur@ee.iitb.ac.in', 'mirrored onto the member');
   });
 
@@ -404,7 +425,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
   await check('GET /roster lists with filters; /summary and /config answer; export.csv is a CSV', async () => {
     const all = await request('/roster');
     assert.equal(all.status, 200);
-    assert.equal(all.body.total, 7);
+    assert.equal(all.body.total, 8);
     const promoted = await request('/roster?status=promoted');
     assert.equal(promoted.body.total, 1);
     const chem = await request('/roster?domain=chemistry&status=eligible');
@@ -414,7 +435,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     const search = await request('/roster?q=verma');
     assert.equal(search.body.total, 1);
     const summary = await request('/roster/summary');
-    assert.equal(summary.body.total, 7);
+    assert.equal(summary.body.total, 8);
     assert.equal(summary.body.byStatus.promoted, 1);
     assert.ok(summary.body.byInstitution[0].name.includes('Bombay'));
     const config = await request('/roster/config');
@@ -474,7 +495,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(noConfirm.status, 400);
     const wiped = await request('/roster', { method: 'DELETE', body: JSON.stringify({ confirm: 'WIPE ROSTER' }) });
     assert.equal(wiped.status, 200);
-    assert.equal(wiped.body.deleted, 7);
+    assert.equal(wiped.body.deleted, 8);
     assert.equal(await repositories.faculty.count(), 0);
     assert.ok(DEPARTMENT_HINTS.findIndex((h) => h.hint === 'biochem') < DEPARTMENT_HINTS.findIndex((h) => h.hint === 'chemical'), 'biochem must be matched before chemical');
   });
