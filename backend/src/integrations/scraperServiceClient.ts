@@ -336,16 +336,24 @@ export interface VidwanRow {
   profile_url: string;
   name: string;
   designation?: string | null;
+  /** Vidwan's broad subject on the card ("Chemical Sciences"). */
+  subject?: string | null;
   institute?: string | null;
   department?: string | null;
+  /** "(2009)" or "1986 - 2022" as printed beside the institute — an end year means a former position. */
+  years?: string | null;
   state?: string | null;
   email?: string | null;
   phone?: string | null;
   website?: string | null;
   expertise?: string | null;
   orcid?: string | null;
+  scopus_id?: string | null;
+  scholar_id?: string | null;
   profile_text?: string | null;
   card_text?: string | null;
+  /** Only the listing card was read (student title, or profile fetch skipped). */
+  card_only?: boolean;
   error?: string | null;
 }
 
@@ -353,7 +361,9 @@ export interface VidwanSearchResponse {
   job_id: string;
   rows: VidwanRow[];
   listing_profiles: number;
+  site_total?: number | null;
   pages_fetched: number;
+  profiles_fetched?: number;
   requests: number;
   blocked: boolean;
   errors: ScrapeError[];

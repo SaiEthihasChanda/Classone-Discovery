@@ -142,26 +142,33 @@ VIDWAN_FORM = """<html><head><meta name="csrf-token" content="tok123"></head><bo
 <form method="POST" action="/profiles/apply-filters"><input type="hidden" name="_token" value="tok123"><input name="q"></form>
 </body></html>"""
 
-VIDWAN_PAGE1 = """<html><body>
-<div class="card"><h5><a href="/profile/1001">Dr. Asha Rao</a></h5><p>Professor</p><p>Indian Institute of Technology Bombay</p><a href="/profile/1001">View Profile</a></div>
-<div class="card"><h5><a href="/profile/1002">Mr. Rohan Das</a></h5><p>Research Scholar</p><p>Indian Institute of Technology Bombay</p><a href="/profile/1002">View Profile</a></div>
-<ul class="pagination"><li><a href="/profiles?page=1">1</a></li><li><a href="/profiles?page=2">2</a></li></ul>
-</body></html>"""
+def _vcard(vid, name, role, subject, inst, loc):
+    return (f'<div class="exp-card"><div class="exp-info-side"><h3 class="exp-title"><a href="/profile/{vid}">{name}</a></h3>'
+            f'<p class="exp-role-text">{role}</p><div class="adv-pill"><span class="adv-pill-text">{subject}</span></div></div>'
+            f'<div class="exp-institution-section"><div class="exp-meta-row exp-meta-row-university"><i class="fa fa-university"></i><span>{inst}</span></div>'
+            f'<div class="exp-meta-row exp-meta-row-location"><span>{loc}</span></div></div><a class="exp-link" href="/profile/{vid}">View Profile.</a></div>')
 
-VIDWAN_PAGE2 = """<html><body>
-<div class="card"><h5><a href="/profile/1003">Dr. Meera Iyer</a></h5><p>Associate Professor</p><p>National Institute of Technology Karnataka</p><a href="/profile/1003">View Profile</a></div>
-<ul class="pagination"><li><a href="/profiles?page=1">1</a></li><li><a href="/profiles?page=2">2</a></li></ul>
-</body></html>"""
+VIDWAN_PAGE1 = ("<html><body><p>60 Total Experts found</p>" + _vcard(1001, "Dr Asha Rao", "Professor", "Chemical Sciences", "Indian Institute of Technology, Bombay", "Mumbai, Maharashtra")
+                + _vcard(1002, "Mr Rohan Das", "Research Scholar", "Chemical Sciences", "Indian Institute of Technology, Bombay", "Mumbai, Maharashtra")
+                + '<ul class="pagination"><li><a href="/profiles?page=0">«</a></li><li><a href="/profiles?page=1">1</a></li><li><a href="/profiles?page=2">2</a></li></ul></body></html>')
 
-VIDWAN_P1001 = """<html><body><h2>Dr. Asha Rao</h2>
-<table><tr><th>Designation</th><td>Professor</td></tr><tr><th>Institute</th><td>Indian Institute of Technology Bombay</td></tr>
-<tr><th>Department</th><td>Department of Chemistry</td></tr><tr><th>Email</th><td><a href="mailto:asha.rao@iitb.ac.in">asha.rao@iitb.ac.in</a></td></tr>
-<tr><th>Phone</th><td>+91 22 2576 7890</td></tr></table>
-<p><strong>Expertise:</strong> Electrochemical biosensors; Corrosion</p>
-<p>ORCID: 0000-0002-1825-0097</p></body></html>"""
+VIDWAN_PAGE2 = ("<html><body><p>60 Total Experts found</p>" + _vcard(1003, "Dr Meera Iyer", "Associate Professor", "Chemical Sciences", "National Institute of Technology Karnataka", "Surathkal, Karnataka")
+                + '<ul class="pagination"><li><a href="/profiles?page=1">1</a></li><li><a href="/profiles?page=2">2</a></li></ul></body></html>')
 
-VIDWAN_P1002 = """<html><body><h2>Rohan Das</h2><dl><dt>Designation</dt><dd>Research Scholar</dd><dt>Institute</dt><dd>Indian Institute of Technology Bombay</dd></dl></body></html>"""
-VIDWAN_P1003 = """<html><body><h2>Meera Iyer</h2><dl><dt>Designation</dt><dd>Associate Professor</dd><dt>Institute</dt><dd>National Institute of Technology Karnataka</dd></dl></body></html>"""
+VIDWAN_P1001 = """<html><body><div class="custom_hero_card"><span class="custom_vidwan_pill">VIDWAN ID: 1001</span>
+<h2 class="custom_hero_name"><span>Dr</span> Asha Rao</h2>
+<div class="custom_hero_info_grid">
+<div class="custom_hero_info_item"><i class="fa-solid fa-user-tie"></i><div class="info_text"><strong>Professor</strong><span class="info_sub">| Department of Chemistry</span></div></div>
+<div class="custom_hero_info_item"><i class="fa-solid fa-building-columns"></i><div class="info_text"><strong>Indian Institute of Technology Bombay</strong><span class="info_sub">(2009)</span></div></div>
+<div class="custom_hero_info_item"><i class="fa-solid fa-location-dot"></i><div class="info_text"><span>Maharashtra</span></div></div></div>
+<div class="custom_hero_exp_row"><span class="exp_label">Expertise:</span><span class="custom_hero_exp_badge">Electrochemical biosensors</span><span class="custom_hero_exp_badge">Corrosion</span></div>
+<div class="custom_hero_ids_row"><a class="custom_id_badge" href="https://orcid.org/0000-0002-1825-0097">ORCID</a><a class="custom_id_badge" href="https://www.scopus.com/authid/detail.uri?authorId=55666014000">Scopus</a></div>
+</div></body></html>"""
+
+VIDWAN_P1002 = """<html><body><h2 class="custom_hero_name">Rohan Das</h2></body></html>"""
+VIDWAN_P1003 = """<html><body><div class="custom_hero_card"><h2 class="custom_hero_name"><span>Dr</span> Meera Iyer</h2>
+<div class="custom_hero_info_item"><i class="fa-solid fa-user-tie"></i><div class="info_text"><strong>Associate Professor</strong></div></div>
+<div class="custom_hero_info_item"><i class="fa-solid fa-building-columns"></i><div class="info_text"><strong>National Institute of Technology Karnataka</strong></div></div></div></body></html>"""
 
 ROUTES: dict[str, tuple[str, bytes]] = {
     "/profiles": ("text/html", VIDWAN_FORM.encode()),
@@ -336,14 +343,15 @@ def main() -> int:
         "timeout_sec_per_page": 10, "base_url": BASE,
     })
     rows = {x["vidwan_id"]: x for x in r.get("rows", [])}
-    check("followed pagination: 2 listing pages", r.get("pages_fetched") == 2, str(r.get("pages_fetched")))
-    check("3 profiles listed, 2 kept after the institute filter", r.get("listing_profiles") == 3 and set(rows) == {"1001", "1002"}, str(list(rows)))
+    check("read the site total and followed 1-indexed pagination: 2 pages", r.get("site_total") == 60 and r.get("pages_fetched") == 2, f"{r.get('site_total')} {r.get('pages_fetched')}")
+    check("3 listed, 2 kept after the institute filter (comma in 'Technology, Bombay' tolerated)", r.get("listing_profiles") == 3 and set(rows) == {"1001", "1002"}, str(list(rows)))
     a = rows.get("1001", {})
-    check("profile fields read from the table", a.get("designation") == "Professor" and a.get("department") == "Department of Chemistry", str(a))
-    check("email from mailto, phone from the table", a.get("email") == "asha.rao@iitb.ac.in" and "2576 7890" in (a.get("phone") or ""), str(a))
-    check("expertise and ORCID picked up", "biosensors" in (a.get("expertise") or "") and a.get("orcid") == "0000-0002-1825-0097", str(a))
-    check("honorific stripped from the name", a.get("name") == "Asha Rao", str(a.get("name")))
-    check("not blocked, no errors", r.get("blocked") is False and not r.get("errors"), json.dumps(r.get("errors")))
+    check("hero grid parsed: designation, department, institute, years", a.get("designation") == "Professor" and a.get("department") == "Department of Chemistry" and a.get("institute") == "Indian Institute of Technology Bombay" and a.get("years") == "2009", str(a))
+    check("expertise badges, ORCID and Scopus ids", a.get("expertise") == "Electrochemical biosensors; Corrosion" and a.get("orcid") == "0000-0002-1825-0097" and a.get("scopus_id") == "55666014000", str(a))
+    check("honorific stripped; subject from the card", a.get("name") == "Asha Rao" and a.get("subject") == "Chemical Sciences", str(a))
+    b = rows.get("1002", {})
+    check("student card returned without a profile fetch", b.get("card_only") is True and b.get("designation") == "Research Scholar", str(b))
+    check("only one profile fetched, not blocked, no errors", r.get("profiles_fetched") == 1 and r.get("blocked") is False and not r.get("errors"), json.dumps(r))
 
     server.shutdown()
     print(f"\n{'ALL PASSED' if failures == 0 else f'{failures} FAILED'}")

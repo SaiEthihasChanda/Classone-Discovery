@@ -440,8 +440,16 @@ export async function buildRoster(
           ctx.log(`Vidwan: ${e.reason}${e.detail ? ` (${e.detail})` : ''}`, found.blocked ? 'error' : 'warn');
         }
         let matched = 0;
+        let former = 0;
+        const thisYear = new Date().getFullYear();
         for (const row of found.rows) {
           if (!row.name?.trim() || NOT_A_NAME.test(row.name)) continue;
+          // "(1986 - 2022)" beside the institute is a position that ended.
+          const span = /(\d{4})\s*[-–]\s*(\d{4})/.exec(row.years ?? '');
+          if (span && Number(span[2]) < thisYear) {
+            former += 1;
+            continue;
+          }
           // The profile must place them at THIS institute; the search is free text.
           const instText = `${row.institute ?? ''} ${row.card_text ?? ''}`;
           const k = instKey(row.institute ?? '');
@@ -478,7 +486,11 @@ export async function buildRoster(
         }
         r.vidwanProfiles = matched;
         ctx.count('vidwanProfiles', matched);
-        ctx.log(`Vidwan: ${found.listing_profiles} search results, ${found.rows.length} profiles read, ${matched} at the institute${found.blocked ? ' — STOPPED: Vidwan refused further requests' : ''}`);
+        ctx.log(
+          `Vidwan: ${found.site_total ?? found.listing_profiles} experts match, ${found.listing_profiles} listed over ${found.pages_fetched} pages, ` +
+            `${found.profiles_fetched ?? 0} profiles read, ${matched} at the institute, ${former} former positions skipped` +
+            `${found.blocked ? ' — STOPPED: Vidwan refused further requests' : ''}`,
+        );
       } catch (error) {
         r.errors.push(`vidwan: ${error instanceof Error ? error.message : String(error)}`);
         ctx.log(`Vidwan search failed: ${error instanceof Error ? error.message : String(error)}`, 'warn');

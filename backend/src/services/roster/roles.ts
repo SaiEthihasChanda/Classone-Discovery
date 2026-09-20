@@ -44,6 +44,7 @@ const STUDENT_PATTERNS: RegExp[] = [
 
 /** Appointments that are not the person's home institute. */
 const ADJUNCT_PATTERNS: RegExp[] = [
+  /\b(former|retired|superannuated|ex)[\s-]+(professor|faculty|scientist|director|head)\b/i,
   /\badjunct\b/i,
   /\bvisiting\b/i,
   /\bguest\b/i,

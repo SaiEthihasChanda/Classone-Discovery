@@ -9,24 +9,33 @@ fetches, and a hard stop on the first 403/429 (`VidwanBlocked`). What it does
 not do: rotate identities, retry through a browser or proxy, or pretend a
 block did not happen.
 
-Flow (Vidwan is a Laravel app):
-    GET  /profiles                 -> CSRF token
-    POST /profiles/apply-filters   -> filtered listing, page 1 (session-held filter)
-    GET  /profiles?page=N          -> further pages of the same filter
-    GET  /profile/<id>             -> one researcher's page
+Verified against the live site on 20 Sep 2026 (Laravel app):
+    GET  /profiles                  form: _token, q, subject[], expertise[],
+                                    sortfield (first_name|organization_name),
+                                    limits (12|24|48)
+    POST /profiles/apply-filters    -> listing page 1; the filter is held in
+                                    the session. "N Total Experts found".
+    GET  /profiles?page=N           -> page N of the SAME filter, 1-indexed
+                                    (page=1 is page 1; the "page=0" link the
+                                    site emits is a duplicate of it)
+    GET  /profile/<id>              -> hero card: name, gender, degree,
+                                    designation | department, institute
+                                    (years), state, Expertise badges,
+                                    ORCID / Scopus / Google Scholar badges.
+                                    No email or phone is published.
 
-Profile parsing is layered and generic — definition lists, label/value
-tables, "Label: value" lines, JSON-LD, mailto links — with the page's visible
-text returned whole, so a layout change degrades to "less structure", never
-to silently wrong fields.
+Listing cards (`.exp-card`) already carry name, designation, broad subject
+and institute, so the role filter can run before any profile is fetched.
+Every selector has a text-based fallback so a redesign degrades to "less
+structure", never to wrong fields.
 """
 
 from __future__ import annotations
 
-import json
+import math
 import re
 from dataclasses import dataclass, field
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -35,25 +44,16 @@ from ..core.config import settings
 from ..core.robots import robots_gate
 
 BASE_URL = "https://vidwan.inflibnet.ac.in"
-PROFILES_URL = f"{BASE_URL}/profiles"
-FILTER_URL = f"{BASE_URL}/profiles/apply-filters"
+PAGE_SIZE = 48
 
-EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-PHONE_RE = re.compile(r"(?:\+91[\s-]?)?(?:\(?0?\d{2,5}\)?[\s-]?)?\d{3,4}[\s-]?\d{4}")
+ORCID_RE = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]")
+TOTAL_RE = re.compile(r"([\d,]+)\s*Total Experts", re.I)
 
-# Label spellings seen on Vidwan profiles, most specific first per field.
-FIELD_LABELS: dict[str, tuple[str, ...]] = {
-    "name": ("name", "full name", "researcher name"),
-    "designation": ("designation", "current designation", "position"),
-    "institute": ("institute", "institution", "organization", "organisation", "affiliation", "university"),
-    "department": ("department", "dept", "department/centre", "department / centre", "school"),
-    "state": ("state", "location"),
-    "email": ("email", "email id", "e-mail", "official email"),
-    "phone": ("phone", "mobile", "contact number", "telephone", "contact no"),
-    "website": ("website", "web site", "homepage", "personal website", "url"),
-    "expertise": ("expertise", "area of expertise", "areas of expertise", "research interests", "subject expertise", "specialization", "specialisation", "keywords", "broad area"),
-    "orcid": ("orcid", "orcid id", "orcid identifier"),
-}
+# Card designations that are never faculty — their profiles are not fetched.
+STUDENT_ROLE_RE = re.compile(
+    r"\b(student|scholar|ph\.?\s?d|doctoral|post[\s-]?doc|research fellow|jrf|srf|project (fellow|assistant|associate|staff)|intern|trainee)\b",
+    re.I,
+)
 
 
 class VidwanBlocked(Exception):
@@ -65,7 +65,11 @@ class VidwanListing:
     vidwan_id: str
     profile_url: str
     listing_name: str
-    card_text: str
+    designation: str = ""
+    subject: str = ""
+    institute: str = ""
+    location: str = ""
+    card_text: str = ""
 
 
 @dataclass
@@ -76,19 +80,23 @@ class VidwanProfile:
     designation: str = ""
     institute: str = ""
     department: str = ""
+    years: str = ""
     state: str = ""
-    email: str = ""
-    phone: str = ""
-    website: str = ""
     expertise: str = ""
     orcid: str = ""
+    scopus_id: str = ""
+    scholar_id: str = ""
+    website: str = ""
     profile_text: str = ""
     structured: dict[str, str] = field(default_factory=dict)
-    error: str = ""
 
 
 def _clean(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _strip_honorific(name: str) -> str:
+    return re.sub(r"^(?:(dr|prof|professor|mr|mrs|ms|shri|smt)\.?\s+)+", "", _clean(name), flags=re.I).strip() or _clean(name)
 
 
 def _csrf_token(soup: BeautifulSoup) -> str | None:
@@ -101,25 +109,60 @@ def _csrf_token(soup: BeautifulSoup) -> str | None:
     return None
 
 
+def parse_total(html: str) -> int | None:
+    m = TOTAL_RE.search(re.sub(r"\s+", " ", html))
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def _profile_id(href: str, base_url: str) -> tuple[str, str] | None:
+    absolute = urljoin(base_url, href.strip())
+    path = urlparse(absolute).path.rstrip("/")
+    if not path.startswith("/profile/"):
+        return None
+    vid = path.split("/")[-1]
+    return (vid, absolute) if vid.isdigit() else None
+
+
 def parse_listing(html: str, base_url: str = BASE_URL) -> list[VidwanListing]:
-    """Researcher cards on a listing page: every /profile/<digits> link, once."""
+    """Researcher cards on a listing page, once each."""
     soup = BeautifulSoup(html, "lxml")
     out: list[VidwanListing] = []
     seen: set[str] = set()
+
+    cards = soup.select(".exp-card")
+    if cards:
+        for card in cards:
+            link = card.select_one(".exp-title a[href]") or card.find("a", href=re.compile(r"/profile/\d+"))
+            if not isinstance(link, Tag):
+                continue
+            ident = _profile_id(str(link["href"]), base_url)
+            if not ident or ident[0] in seen:
+                continue
+            seen.add(ident[0])
+            role = card.select_one(".exp-role-text")
+            subject = card.select_one(".adv-pill-text")
+            inst = card.select_one(".exp-meta-row-university span")
+            loc = card.select_one(".exp-meta-row-location span")
+            out.append(
+                VidwanListing(
+                    vidwan_id=ident[0],
+                    profile_url=ident[1],
+                    listing_name=_strip_honorific(link.get_text(" ", strip=True)),
+                    designation=_clean(role.get_text(" ", strip=True)) if role else "",
+                    subject=_clean(subject.get_text(" ", strip=True)) if subject else "",
+                    institute=_clean(inst.get_text(" ", strip=True)) if inst else "",
+                    location=_clean(loc.get_text(" ", strip=True)) if loc else "",
+                    card_text=_clean(card.get_text(" ", strip=True))[:600],
+                )
+            )
+        return out
+
+    # Fallback: any /profile/<id> link, with the surrounding text as the card.
     for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not isinstance(href, str):
+        ident = _profile_id(str(a["href"]), base_url)
+        if not ident or ident[0] in seen:
             continue
-        absolute = urljoin(base_url, href.strip())
-        path = urlparse(absolute).path.rstrip("/")
-        if not path.startswith("/profile/"):
-            continue
-        vid = path.split("/")[-1]
-        if not vid.isdigit() or vid in seen:
-            continue
-        seen.add(vid)
-        # The card around the link carries designation/institute on the listing
-        # itself — useful when the profile page cannot be fetched.
+        seen.add(ident[0])
         node: Tag | None = a
         card = _clean(a.get_text(" ", strip=True))
         for _ in range(6):
@@ -127,131 +170,75 @@ def parse_listing(html: str, base_url: str = BASE_URL) -> list[VidwanListing]:
             if node is None:
                 break
             text = _clean(node.get_text(" ", strip=True))
-            if len(text) > 40 and len(text) < 2500:
+            if 40 < len(text) < 2500:
                 card = text
                 if "view profile" in text.lower() or len(text) > 120:
                     break
-        out.append(VidwanListing(vidwan_id=vid, profile_url=absolute, listing_name=_clean(a.get_text(" ", strip=True)), card_text=card))
+        out.append(VidwanListing(vidwan_id=ident[0], profile_url=ident[1], listing_name=_strip_honorific(a.get_text(" ", strip=True)), card_text=card[:600]))
     return out
-
-
-def parse_pagination(html: str, page_url: str = BASE_URL, site_root: str = BASE_URL) -> list[str]:
-    """/profiles?page=N links on a listing page, ascending, rebuilt on the site root."""
-    soup = BeautifulSoup(html, "lxml")
-    pages: dict[int, str] = {}
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not isinstance(href, str):
-            continue
-        absolute = urljoin(page_url, href.strip())
-        parsed = urlparse(absolute)
-        if parsed.path.rstrip("/") != "/profiles":
-            continue
-        n = parse_qs(parsed.query).get("page", [None])[0]
-        if n and str(n).isdigit():
-            pages[int(n)] = f"{site_root.rstrip('/')}/profiles?page={int(n)}"
-    return [pages[k] for k in sorted(pages)]
-
-
-def _label_value_pairs(soup: BeautifulSoup) -> dict[str, str]:
-    """Label → value from <dt>/<dd>, two-cell table rows and "Label: value" lines."""
-    data: dict[str, str] = {}
-
-    def put(key: str, value: str) -> None:
-        key = _clean(key).rstrip(":").strip().lower()
-        value = _clean(value)
-        if key and value and len(key) < 60 and key not in data:
-            data[key] = value
-
-    for dt in soup.find_all("dt"):
-        dd = dt.find_next_sibling("dd")
-        if dd:
-            put(dt.get_text(" ", strip=True), dd.get_text(" ", strip=True))
-
-    for row in soup.find_all("tr"):
-        cells = row.find_all(["th", "td"])
-        if len(cells) >= 2:
-            put(cells[0].get_text(" ", strip=True), " ".join(c.get_text(" ", strip=True) for c in cells[1:]))
-
-    # "<strong>Designation</strong>: Professor" and "<label>Institute</label><span>IIT Bombay</span>"
-    for lab in soup.find_all(["strong", "b", "label", "th", "span", "div", "p", "li", "h5", "h6"]):
-        text = _clean(lab.get_text(" ", strip=True))
-        if not text or len(text) > 200:
-            continue
-        m = re.match(r"^([A-Za-z][A-Za-z /]{1,40}?)\s*:\s*(.+)$", text)
-        if m:
-            put(m.group(1), m.group(2))
-            continue
-        if lab.name in ("strong", "b", "label", "th") and len(text) < 40:
-            sib = lab.find_next_sibling()
-            if isinstance(sib, Tag):
-                value = _clean(sib.get_text(" ", strip=True))
-                if value and not value.endswith(":"):
-                    put(text, value)
-    return data
 
 
 def parse_profile(html: str, vidwan_id: str, profile_url: str) -> VidwanProfile:
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.find_all(["script", "style", "nav", "footer"]):
-        if tag.name == "script" and tag.get("type") == "application/ld+json":
-            continue
+    for tag in soup.find_all(["script", "style"]):
         tag.decompose()
+    p = VidwanProfile(vidwan_id=vidwan_id, profile_url=profile_url)
 
-    structured = _label_value_pairs(soup)
-    profile = VidwanProfile(vidwan_id=vidwan_id, profile_url=profile_url, structured=structured)
+    name = soup.select_one(".custom_hero_name") or soup.find(["h1", "h2"])
+    if name:
+        p.name = _strip_honorific(name.get_text(" ", strip=True))
 
-    for field_name, labels in FIELD_LABELS.items():
-        for label in labels:
-            if label in structured:
-                setattr(profile, field_name, structured[label])
+    # The hero grid: the icon on each item says what it is.
+    for item in soup.select(".custom_hero_info_item"):
+        icon = item.find("i")
+        classes = " ".join(icon.get("class", [])) if isinstance(icon, Tag) else ""
+        strong = item.find("strong")
+        sub = item.select_one(".info_sub")
+        main = _clean(strong.get_text(" ", strip=True)) if strong else _clean(item.get_text(" ", strip=True))
+        extra = _clean(sub.get_text(" ", strip=True)) if sub else ""
+        if "user-tie" in classes or (not classes and not p.designation):
+            p.designation = p.designation or main
+            if extra:
+                p.department = p.department or extra.lstrip("|").strip()
+        elif "building" in classes:
+            p.institute = p.institute or main
+            if extra:
+                p.years = extra.strip("() ")
+        elif "location" in classes:
+            p.state = p.state or main
+
+    p.expertise = "; ".join(_clean(b.get_text(" ", strip=True)) for b in soup.select(".custom_hero_exp_badge") if _clean(b.get_text()))
+
+    for badge in soup.select("a.custom_id_badge[href]"):
+        href = str(badge["href"])
+        if "orcid.org" in href:
+            m = ORCID_RE.search(href)
+            p.orcid = m.group(0) if m else p.orcid
+        elif "scopus.com" in href:
+            m = re.search(r"authorId=(\d+)", href)
+            p.scopus_id = m.group(1) if m else p.scopus_id
+        elif "scholar.google" in href:
+            m = re.search(r"user=([\w-]+)", href)
+            p.scholar_id = m.group(1) if m else p.scholar_id
+
+    # Text-based fallbacks for a redesigned page.
+    text = _clean(soup.get_text(" ", strip=True))
+    if not p.orcid:
+        m = ORCID_RE.search(text)
+        p.orcid = m.group(0) if m else ""
+    if not p.expertise:
+        m = re.search(r"Expertise:\s*(.+?)(?:\s+View older version|\s+My Dashboard|$)", text)
+        p.expertise = _clean(m.group(1))[:300] if m else ""
+    for a in soup.find_all("a", href=True):
+        href = str(a["href"])
+        if re.search(r"^https?://", href) and not re.search(r"inflibnet|irins|scopus|orcid|scholar\.google|google\.com|facebook|twitter|linkedin", href):
+            label = _clean(a.get_text(" ", strip=True)).lower()
+            if "website" in label or "homepage" in label:
+                p.website = href
                 break
 
-    # JSON-LD (schema.org/Person) when present.
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            data = json.loads(script.string or script.get_text() or "{}")
-        except ValueError:
-            continue
-        items = data if isinstance(data, list) else [data]
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            profile.name = profile.name or _clean(str(item.get("name") or ""))
-            profile.designation = profile.designation or _clean(str(item.get("jobTitle") or ""))
-            org = item.get("worksFor") or item.get("affiliation")
-            if isinstance(org, dict):
-                profile.institute = profile.institute or _clean(str(org.get("name") or ""))
-            profile.email = profile.email or _clean(str(item.get("email") or "")).replace("mailto:", "")
-            profile.phone = profile.phone or _clean(str(item.get("telephone") or ""))
-            profile.website = profile.website or _clean(str(item.get("url") or ""))
-
-    # Name from the page heading when no label gave one.
-    if not profile.name:
-        h = soup.find(["h1", "h2", "h3"])
-        if h:
-            profile.name = _clean(h.get_text(" ", strip=True))
-
-    # mailto beats a regex over text, which picks up the site's own address.
-    if not profile.email:
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if isinstance(href, str) and href.lower().startswith("mailto:"):
-                addr = href[7:].split("?")[0].strip().lower()
-                if EMAIL_RE.fullmatch(addr) and "inflibnet" not in addr:
-                    profile.email = addr
-                    break
-    if profile.email and not EMAIL_RE.fullmatch(profile.email.lower()):
-        m = EMAIL_RE.search(profile.email)
-        profile.email = m.group(0).lower() if m else ""
-    profile.email = profile.email.lower()
-
-    orcid = re.search(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]", profile.orcid or html)
-    profile.orcid = orcid.group(0) if orcid else ""
-
-    profile.profile_text = _clean(soup.get_text(" ", strip=True))[:6000]
-    profile.name = re.sub(r"^(dr|prof|professor|mr|mrs|ms)\.?\s+", "", profile.name, flags=re.I).strip() or profile.name
-    return profile
+    p.profile_text = text[:6000]
+    return p
 
 
 class VidwanClient:
@@ -283,8 +270,8 @@ class VidwanClient:
         response.raise_for_status()
         return response
 
-    async def search(self, query: str, *, limit: int = 12, max_pages: int = 50) -> tuple[list[VidwanListing], int]:
-        """All listing cards for one query; returns (listings, pages fetched)."""
+    async def search(self, query: str, *, max_pages: int = 50, on_page=None) -> tuple[list[VidwanListing], int, int | None]:
+        """Every listing card for one query: (listings, pages fetched, total the site reports)."""
         profiles_url = f"{self.base_url}/profiles"
         landing = await self._request("GET", profiles_url)
         token = _csrf_token(BeautifulSoup(landing.text, "lxml"))
@@ -294,17 +281,16 @@ class VidwanClient:
         first = await self._request(
             "POST",
             f"{self.base_url}/profiles/apply-filters",
-            data={"_token": token, "q": query, "sortfield": "first_name", "limits": str(limit)},
+            data={"_token": token, "q": query, "sortfield": "first_name", "limits": str(PAGE_SIZE)},
             headers={"Referer": profiles_url, "Origin": self.base_url},
         )
-
+        total = parse_total(first.text)
         listings: list[VidwanListing] = []
         seen: set[str] = set()
-        visited: set[str] = set()
 
-        def absorb(html: str, base: str) -> int:
+        def absorb(html: str) -> int:
             new = 0
-            for item in parse_listing(html, base):
+            for item in parse_listing(html, self.base_url):
                 if item.vidwan_id not in seen:
                     seen.add(item.vidwan_id)
                     listings.append(item)
@@ -312,42 +298,32 @@ class VidwanClient:
             return new
 
         pages = 1
-        visited.add(str(first.url))
-        absorb(first.text, str(first.url))
-        queue = [u for u in parse_pagination(first.text, str(first.url), self.base_url) if u not in visited]
-
-        while queue and pages < max_pages:
-            url = queue.pop(0)
-            if url in visited:
-                continue
-            visited.add(url)
-            page = await self._request("GET", url)
+        absorb(first.text)
+        if on_page:
+            on_page(pages, len(listings), total)
+        last_page = math.ceil(total / PAGE_SIZE) if total else max_pages
+        # 1-indexed within the session: page 1 is what the POST returned.
+        for n in range(2, min(last_page, max_pages) + 1):
+            page = await self._request("GET", f"{profiles_url}?page={n}")
             pages += 1
-            new = absorb(page.text, url)
-            # A page that adds nothing means the session's filter has been lost
-            # (or the listing looped) — going on would crawl the whole site.
+            new = absorb(page.text)
+            if on_page:
+                on_page(pages, len(listings), total)
+            # Nothing new means the session filter is gone (the site would now
+            # be serving the unfiltered national list) — stop rather than crawl it.
             if new == 0:
                 break
-            for nxt in parse_pagination(page.text, url, self.base_url):
-                if nxt not in visited and nxt not in queue:
-                    queue.append(nxt)
-        return listings, pages
+        return listings, pages, total
 
     async def profile(self, listing: VidwanListing) -> VidwanProfile:
         response = await self._request("GET", listing.profile_url)
-        profile = parse_profile(response.text, listing.vidwan_id, listing.profile_url)
-        if not profile.name:
-            profile.name = listing.listing_name
-        # The listing card often states designation and institute even when the
-        # profile page's markup defeats the label parser.
-        if not profile.designation or not profile.institute:
-            card = listing.card_text
-            for field_name in ("designation", "institute", "department"):
-                if getattr(profile, field_name):
-                    continue
-                for label in FIELD_LABELS[field_name]:
-                    m = re.search(rf"\b{re.escape(label)}\s*:?\s*([^|•\n]{{3,120}}?)(?=\s+(?:{'|'.join(sum(FIELD_LABELS.values(), ()))})\b\s*:|$)", card, re.I)
-                    if m:
-                        setattr(profile, field_name, _clean(m.group(1)))
-                        break
-        return profile
+        p = parse_profile(response.text, listing.vidwan_id, listing.profile_url)
+        # The card is authoritative for what the profile page did not state.
+        p.name = p.name or listing.listing_name
+        p.designation = p.designation or listing.designation
+        p.institute = p.institute or listing.institute
+        return p
+
+
+def looks_like_student(designation: str) -> bool:
+    return bool(designation) and bool(STUDENT_ROLE_RE.search(designation))

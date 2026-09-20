@@ -41,7 +41,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     for (const t of ['PhD Student', 'Ph.D. Scholar', 'Research Scholar', 'Postdoctoral Fellow', 'Post-doctoral Research Scientist', 'Senior Research Fellow', 'JRF', 'Project Assistant', 'Project Research Scientist', 'Research Associate', 'M.Tech student', 'National Post-Doctoral Fellow']) {
       assert.equal(classifyRole(t).category, 'excluded', `"${t}" should be excluded`);
     }
-    for (const t of ['Adjunct Professor', 'Visiting Professor', 'Guest Faculty', 'Honorary Professor']) {
+    for (const t of ['Adjunct Professor', 'Visiting Professor', 'Guest Faculty', 'Honorary Professor', 'Former Professor', 'Retired Professor']) {
       assert.equal(classifyRole(t).category, 'excluded', `"${t}" should be excluded`);
     }
     assert.equal(classifyRole('').category, 'unknown');

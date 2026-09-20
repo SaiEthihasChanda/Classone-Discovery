@@ -6,6 +6,7 @@ target is wrapped and failures are reported alongside successes.
 """
 
 import asyncio
+import re
 
 from fastapi import APIRouter
 
@@ -41,7 +42,7 @@ from ..scrapers.news_scraper import (
 )
 from ..scrapers.static_fetcher import FetchError, fetch_page
 from ..scrapers.target_finder import find_department_faculty_pages
-from ..scrapers.vidwan import VidwanBlocked, VidwanClient
+from ..scrapers.vidwan import VidwanBlocked, VidwanClient, looks_like_student
 from ..scrapers.tiered_fetcher import fetch_with_escalation
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
@@ -237,23 +238,41 @@ async def vidwan_search(request: VidwanSearchRequest) -> VidwanSearchResponse:
 
     Sequential and delayed by design (see `scrapers/vidwan.py`). A 403/429
     ends the run with `blocked=true`; whatever was collected before it is
-    returned.
+    returned. Cards whose designation is a student title are returned from the
+    listing alone — no profile fetch — since the roster drops them anyway.
     """
     out = VidwanSearchResponse(job_id=request.job_id)
     client = VidwanClient(timeout_sec=request.timeout_sec_per_page, base_url=request.base_url or "https://vidwan.inflibnet.ac.in")
     terms = [t.lower() for t in request.institution_terms if t.strip()]
 
-    def wanted(text: str) -> bool:
+    def at_institute(*texts: str) -> bool:
         if not terms:
             return True
-        hay = text.lower()
-        return any(t in hay for t in terms)
+        hay = " ".join(t for t in texts if t).lower().replace(",", " ")
+        hay = re.sub(r"\s+", " ", hay)
+        return any(re.sub(r"\s+", " ", t.replace(",", " ")) in hay for t in terms)
+
+    def row_from(listing, profile=None) -> VidwanRow:
+        if profile is None:
+            return VidwanRow(
+                vidwan_id=listing.vidwan_id, profile_url=listing.profile_url, name=listing.listing_name,
+                designation=listing.designation or None, subject=listing.subject or None, institute=listing.institute or None,
+                state=listing.location or None, card_text=listing.card_text or None, card_only=True,
+            )
+        return VidwanRow(
+            vidwan_id=profile.vidwan_id, profile_url=profile.profile_url, name=profile.name or listing.listing_name,
+            designation=profile.designation or None, subject=listing.subject or None, institute=profile.institute or None,
+            department=profile.department or None, years=profile.years or None, state=profile.state or listing.location or None,
+            website=profile.website or None, expertise=profile.expertise or None, orcid=profile.orcid or None,
+            scopus_id=profile.scopus_id or None, scholar_id=profile.scholar_id or None,
+            profile_text=profile.profile_text or None, card_text=listing.card_text or None,
+        )
 
     try:
         listings: dict[str, object] = {}
         for query in request.queries:
             try:
-                found, pages = await client.search(query, max_pages=request.max_pages_per_query)
+                found, pages, total = await client.search(query, max_pages=request.max_pages_per_query)
             except VidwanBlocked as exc:
                 out.blocked = True
                 out.errors.append(ScrapeError(target=query, reason=ScrapeErrorReason.BLOCKED, detail=str(exc)))
@@ -262,39 +281,44 @@ async def vidwan_search(request: VidwanSearchRequest) -> VidwanSearchResponse:
                 out.errors.append(ScrapeError(target=query, reason=ScrapeErrorReason.UNKNOWN, detail=f"{type(exc).__name__}: {exc}"))
                 continue
             out.pages_fetched += pages
+            if total is not None:
+                out.site_total = (out.site_total or 0) + total
             for item in found:
                 listings.setdefault(item.vidwan_id, item)
         out.listing_profiles = len(listings)
 
-        candidates = [l for l in listings.values() if wanted(getattr(l, "card_text", "") + " " + getattr(l, "listing_name", ""))]
-        # When the card text carries no institute at all the filter would drop
-        # everyone; in that case the profile pages decide.
-        if terms and len(candidates) < max(3, len(listings) // 10):
+        # Keep only people the card places at the institute; the profile page
+        # confirms it again below for those we fetch.
+        candidates = [l for l in listings.values() if at_institute(getattr(l, "institute", ""), getattr(l, "card_text", ""))]
+        if terms and not candidates and listings:
             candidates = list(listings.values())
 
-        for listing in candidates[: request.max_profiles]:
+        fetched = 0
+        for listing in candidates:
             if out.blocked:
                 break
-            row = VidwanRow(vidwan_id=listing.vidwan_id, profile_url=listing.profile_url, name=listing.listing_name, card_text=listing.card_text[:600])  # type: ignore[attr-defined]
-            if request.fetch_profiles:
-                try:
-                    p = await client.profile(listing)  # type: ignore[arg-type]
-                    row = VidwanRow(
-                        vidwan_id=p.vidwan_id, profile_url=p.profile_url, name=p.name or listing.listing_name,  # type: ignore[attr-defined]
-                        designation=p.designation or None, institute=p.institute or None, department=p.department or None,
-                        state=p.state or None, email=p.email or None, phone=p.phone or None, website=p.website or None,
-                        expertise=p.expertise or None, orcid=p.orcid or None, profile_text=p.profile_text or None,
-                        card_text=listing.card_text[:600],  # type: ignore[attr-defined]
-                    )
-                except VidwanBlocked as exc:
-                    out.blocked = True
-                    out.errors.append(ScrapeError(target=listing.profile_url, reason=ScrapeErrorReason.BLOCKED, detail=str(exc)))  # type: ignore[attr-defined]
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    row.error = f"{type(exc).__name__}: {exc}"
-            if terms and not wanted(" ".join(filter(None, [row.institute, row.card_text, row.profile_text or ""]))):
+            skip = (request.skip_students and looks_like_student(getattr(listing, "designation", ""))) or not request.fetch_profiles or fetched >= request.max_profiles
+            if skip:
+                out.rows.append(row_from(listing))
+                continue
+            try:
+                profile = await client.profile(listing)  # type: ignore[arg-type]
+                fetched += 1
+            except VidwanBlocked as exc:
+                out.blocked = True
+                out.errors.append(ScrapeError(target=getattr(listing, "profile_url", ""), reason=ScrapeErrorReason.BLOCKED, detail=str(exc)))
+                out.rows.append(row_from(listing))
+                break
+            except Exception as exc:  # noqa: BLE001
+                row = row_from(listing)
+                row.error = f"{type(exc).__name__}: {exc}"
+                out.rows.append(row)
+                continue
+            row = row_from(listing, profile)
+            if terms and not at_institute(row.institute or "", row.card_text or ""):
                 continue
             out.rows.append(row)
+        out.profiles_fetched = fetched
     finally:
         out.requests = client.requests
         await client.aclose()

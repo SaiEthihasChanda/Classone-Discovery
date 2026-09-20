@@ -329,9 +329,11 @@ class VidwanSearchRequest(BaseModel):
     # Free-text queries for Vidwan's search box — an institute's names, usually.
     queries: list[str]
     max_pages_per_query: int = Field(default=50, ge=1, le=1000)
-    max_profiles: int = Field(default=600, ge=1, le=5000)
-    # Fetch each profile page (designation, department, email…) — the slow part.
+    max_profiles: int = Field(default=1500, ge=1, le=5000)
+    # Fetch each profile page (department, expertise, ORCID) — the slow part.
     fetch_profiles: bool = True
+    # Do not fetch profiles whose listing card already says student/scholar/postdoc.
+    skip_students: bool = True
     # Keep only people whose institute or card text contains one of these.
     institution_terms: list[str] = Field(default_factory=list)
     timeout_sec_per_page: int = Field(default=20, ge=1, le=120)
@@ -344,16 +346,23 @@ class VidwanRow(BaseModel):
     profile_url: str
     name: str
     designation: Optional[str] = None
+    # Vidwan's broad subject on the card ("Chemical Sciences").
+    subject: Optional[str] = None
     institute: Optional[str] = None
     department: Optional[str] = None
+    years: Optional[str] = None
     state: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     website: Optional[str] = None
     expertise: Optional[str] = None
     orcid: Optional[str] = None
+    scopus_id: Optional[str] = None
+    scholar_id: Optional[str] = None
     profile_text: Optional[str] = None
     card_text: Optional[str] = None
+    # True when only the listing card was read (profile skipped or failed).
+    card_only: bool = False
     error: Optional[str] = None
 
 
@@ -361,7 +370,10 @@ class VidwanSearchResponse(BaseModel):
     job_id: str
     rows: list[VidwanRow] = Field(default_factory=list)
     listing_profiles: int = 0
+    # What the site said the query matched in total.
+    site_total: Optional[int] = None
     pages_fetched: int = 0
+    profiles_fetched: int = 0
     requests: int = 0
     # Set when Vidwan answered 403/429: the run stopped there and nothing worked around it.
     blocked: bool = False
