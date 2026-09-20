@@ -42,6 +42,7 @@ const STAGE_LABEL: Record<RosterJobKind, string> = {
   roster_build: '1 · Build roster',
   roster_verify: '2 · Verify affiliations',
   roster_score: '3 · Score relevance',
+  roster_sweep: '3b · Instrument sweep',
   roster_promote: '4 · Promote to CRM',
   roster_fill: '5 · Fill missing info',
 };
@@ -315,6 +316,27 @@ export function FacultyPage() {
     );
   };
 
+  const sweep = async () => {
+    setActionError(null);
+    const ids = institutes.length > 0 ? institutes : [...new Set((summary?.byInstitution ?? []).map((i) => config?.institutions.find((c) => c.name === i.name)?.id).filter((x): x is string => Boolean(x)))];
+    if (ids.length === 0) {
+      setActionError('Choose the institutes to sweep (stage 1 picker), or build a roster first.');
+      return;
+    }
+    let est: { min: number; max: number; brands: number };
+    try {
+      est = await api.rosterSweepEstimate(ids.length);
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : String(e));
+      return;
+    }
+    void run(
+      'Instrument sweep',
+      `Sweep ${ids.length} institute${ids.length === 1 ? '' : 's'} for instrument owners: one full-text query per brand (${est.brands} brands) across the whole institute, then one per known model for brands with hits. Every roster member seen on a matching paper gets the brand/model and is re-scored.\n\nCost: ${est.min}–${est.max} OpenAlex credits in total (not per person). Proceed?`,
+      () => api.rosterSweep({ institutionIds: ids }),
+    );
+  };
+
   const fill = () =>
     void run(
       'Fill missing info',
@@ -446,6 +468,9 @@ export function FacultyPage() {
             </button>
             <button className="btn btn-sm" onClick={() => void score(true)} disabled={Boolean(running) || !summary?.byStatus.eligible}>
               Re-score all
+            </button>
+            <button className="btn btn-sm" onClick={() => void sweep()} disabled={Boolean(running) || !summary?.total} title="One full-text query per brand across the whole institute — finds every roster member who has written up a PalmSens, Autolab, Gamry… at a fraction of the per-lead scan's cost">
+              Instrument sweep
             </button>
           </div>
         </Stage>

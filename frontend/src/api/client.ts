@@ -296,6 +296,10 @@ export const api = {
     request<{ members: number; withOpenAlex: number; credits: number }>(`/roster/score/estimate?rescore=${rescore}`),
   rosterScore: (payload: { rescore?: boolean; sinceYears?: number } = {}) =>
     request<{ job: RosterJob }>('/roster/score', { method: 'POST', body: JSON.stringify(payload) }),
+  rosterSweepEstimate: (institutions: number) =>
+    request<{ min: number; max: number; brands: number }>(`/roster/sweep/estimate?institutions=${institutions}`),
+  rosterSweep: (payload: { institutionIds: string[]; rescore?: boolean }) =>
+    request<{ job: RosterJob }>('/roster/sweep', { method: 'POST', body: JSON.stringify(payload) }),
   rosterPromoteEstimate: (threshold: number) =>
     request<{ candidates: number; withOpenAlex: number; scanCreditsPerLead: { min: number; max: number } }>(`/roster/promote/estimate?threshold=${threshold}`),
   rosterPromote: (payload: { threshold?: number; identifyInstruments?: boolean } = {}) =>

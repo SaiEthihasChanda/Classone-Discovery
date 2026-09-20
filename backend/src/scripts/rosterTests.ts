@@ -338,6 +338,39 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(iyer!.relevance.score, 0, 'no ids, no evidence → scored 0, not left unscored');
   });
 
+  await check('sweepInstruments tags roster members seen in institute-wide brand queries and re-scores them', async () => {
+    const { sweepInstruments } = await import('../services/roster/rosterSweep.js');
+    const verma = await repositories.faculty.findSamePerson({ openAlexAuthorId: 'A5000000002', normalizedNameKey: '' });
+    const before = verma!.relevance.score ?? 0;
+    const result = await sweepInstruments({ institutionIds: [IITB_ID] }, noopCtx(), {
+      fetchBrands: async () => ({
+        source: 'openalex',
+        errors: [],
+        candidates: [
+          {
+            sourceType: 'openalex', sourceRecordId: 'https://openalex.org/A5000000002', name: 'Rahul Verma', institutionName: 'Indian Institute of Technology Bombay',
+            publications: [{ title: 'Field sensing with a handheld potentiostat', year: 2025 }], grants: [], topics: [], evidenceText: '',
+            instruments: [{ brandKey: 'palmsens', brand: 'PalmSens', vendor: 'classone', model: 'PalmSens4', evidence: 'Full text mentions the PalmSens4.', matchedVia: 'fulltext_search' }],
+          },
+          {
+            sourceType: 'openalex', sourceRecordId: 'https://openalex.org/A5999999999', name: 'Some Student', institutionName: 'Indian Institute of Technology Bombay',
+            publications: [], grants: [], topics: [], evidenceText: '',
+            instruments: [{ brandKey: 'gamry', brand: 'Gamry', vendor: 'competitor', evidence: 'x', matchedVia: 'fulltext_search' }],
+          },
+        ],
+      }),
+    });
+    assert.equal(result.membersTagged, 1);
+    assert.deepEqual(result.classOneOwners, ['Rahul Verma']);
+    assert.equal(result.institutions[0]!.notOnRoster, 1, 'a student on the paper is not on the roster');
+    const after = await repositories.faculty.findSamePerson({ openAlexAuthorId: 'A5000000002', normalizedNameKey: '' });
+    assert.equal(after!.research.instruments[0]!.model, 'PalmSens4');
+    assert.ok(after!.tags.includes('instruments-swept'));
+    assert.ok((after!.relevance.score ?? 0) > before, `re-scored ${before} → ${after!.relevance.score}`);
+    // Put him back below the bar so the promotion test below still promotes exactly one.
+    await repositories.faculty.updateById(after!.id, { relevance: { score: 10 }, research: { instruments: [] } });
+  });
+
   await check('promoteRoster creates CRM leads above the threshold, linked back to the member', async () => {
     const result = await promoteRoster({ threshold: 40 }, noopCtx());
     assert.equal(result.promoted, 1);

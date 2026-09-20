@@ -21,6 +21,7 @@ import { DOMAIN_LABELS } from '../services/roster/domains.js';
 import { verifyRoster } from '../services/roster/rosterAffiliation.js';
 import { buildRoster, importRoster, type ImportRow } from '../services/roster/rosterBuilder.js';
 import { fillRoster } from '../services/roster/rosterFill.js';
+import { estimateSweepCredits, sweepInstruments } from '../services/roster/rosterSweep.js';
 import {
   DEFAULT_PROMOTE_THRESHOLD,
   estimatePromotion,
@@ -256,6 +257,29 @@ rosterRouter.post(
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
     const job = startOrConflict('roster_score', (ctx) => scoreRoster(parsed.data, ctx));
+    res.status(202).json({ job });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Stage 3b — institute-wide instrument sweep
+// ---------------------------------------------------------------------------
+
+rosterRouter.get(
+  '/sweep/estimate',
+  asyncHandler(async (req, res) => {
+    const n = Math.max(1, Number(req.query.institutions ?? 1) || 1);
+    res.json(await estimateSweepCredits(n));
+  }),
+);
+
+rosterRouter.post(
+  '/sweep',
+  asyncHandler(async (req, res) => {
+    const schema = z.object({ institutionIds: z.array(z.string()).min(1).max(100), rescore: z.boolean().optional() });
+    const parsed = schema.safeParse(req.body ?? {});
+    if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
+    const job = startOrConflict('roster_sweep', (ctx) => sweepInstruments(parsed.data, ctx));
     res.status(202).json({ job });
   }),
 );

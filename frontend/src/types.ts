@@ -251,7 +251,7 @@ export interface RosterConfig {
   defaultThreshold: number;
 }
 
-export type RosterJobKind = 'roster_build' | 'roster_verify' | 'roster_score' | 'roster_promote' | 'roster_fill';
+export type RosterJobKind = 'roster_build' | 'roster_verify' | 'roster_score' | 'roster_sweep' | 'roster_promote' | 'roster_fill';
 
 export interface RosterJob {
   id: string;

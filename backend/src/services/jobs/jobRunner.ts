@@ -13,7 +13,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-export type JobKind = 'roster_build' | 'roster_verify' | 'roster_score' | 'roster_promote' | 'roster_fill';
+export type JobKind = 'roster_build' | 'roster_verify' | 'roster_score' | 'roster_sweep' | 'roster_promote' | 'roster_fill';
 
 export type JobStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
