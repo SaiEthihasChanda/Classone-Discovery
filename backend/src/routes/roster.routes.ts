@@ -30,6 +30,8 @@ import {
   scoreRoster,
 } from '../services/roster/rosterRelevance.js';
 import type { FacultyMember } from '../types/domain.js';
+import { exportFilename, rosterToCsv, rosterToXlsx, SPLIT_OPTIONS } from '../services/roster/rosterExport.js';
+import { getSettings } from '../services/settings/settingsService.js';
 
 export const rosterRouter = Router();
 
@@ -39,18 +41,31 @@ const objectId = z.string().regex(/^[a-f\d]{24}$/i);
 // Listing
 // ---------------------------------------------------------------------------
 
+/** Comma-separated multi-values ("chemistry,energy") are accepted for domain, role, source and brand. */
+const csv = z.string().transform((v) => v.split(',').map((x) => x.trim()).filter(Boolean)).optional();
+
 const listSchema = z.object({
   status: z.enum(['eligible', 'excluded', 'promoted']).optional(),
-  domain: z.string().optional(),
-  role: z.string().optional(),
+  domain: csv,
+  role: csv,
   institutionId: z.string().optional(),
   affiliation: z.enum(['current', 'moved', 'unknown', 'unverified']).optional(),
   tag: z.string().optional(),
+  /** Source that contributed the member: orcid | openalex | faculty_page | vidwan | vidwan_import. */
+  source: csv,
+  /** Instrument brand key ("palmsens") or "any" / "none". */
+  brand: csv,
+  vendor: z.enum(['classone', 'competitor', 'none']).optional(),
+  hasEmail: z.enum(['yes', 'no']).optional(),
+  hasTitle: z.enum(['yes', 'no']).optional(),
+  hasPhone: z.enum(['yes', 'no']).optional(),
+  outsideTarget: z.enum(['yes', 'no']).optional(),
   minScore: z.coerce.number().min(0).max(100).optional(),
+  maxScore: z.coerce.number().min(0).max(100).optional(),
   scored: z.enum(['yes', 'no']).optional(),
   missing: z.enum(['email', 'title', 'phone', 'websiteUrl']).optional(),
   q: z.string().trim().optional(),
-  sort: z.enum(['score', 'name', 'newest']).default('score'),
+  sort: z.enum(['score', 'name', 'newest', 'works']).default('score'),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(500).default(50),
 });
@@ -58,9 +73,27 @@ const listSchema = z.object({
 function buildQuery(params: z.infer<typeof listSchema>): Query {
   const filter: Filter = [];
   if (params.status) filter.push(where.eq('status', params.status));
-  if (params.domain) filter.push(where.eq('department.domain', params.domain));
-  if (params.role) filter.push(where.eq('role.category', params.role));
+  if (params.domain?.length) filter.push(where.in('department.domain', params.domain));
+  if (params.role?.length) filter.push(where.in('role.category', params.role));
   if (params.institutionId) filter.push(where.eq('institution.discoveredOpenAlexId', params.institutionId));
+  if (params.source?.length) filter.push(where.in('sources.type', params.source));
+  if (params.brand?.length) {
+    if (params.brand.includes('none')) filter.push(where.eq('research.instruments', []));
+    else if (params.brand.includes('any')) filter.push(where.ne('research.instruments', []));
+    else filter.push(where.in('research.instruments.brandKey', params.brand));
+  }
+  if (params.vendor === 'none') filter.push(where.eq('research.instruments', []));
+  else if (params.vendor) filter.push(where.eq('research.instruments.vendor', params.vendor));
+  const presence = (field: string, v?: 'yes' | 'no') => {
+    if (v === 'yes') filter.push(where.ne(field, null));
+    if (v === 'no') filter.push(where.eq(field, null));
+  };
+  presence('person.email', params.hasEmail);
+  presence('person.title', params.hasTitle);
+  presence('person.phone', params.hasPhone);
+  if (params.outsideTarget === 'yes') filter.push(where.eq('institution.outsideTarget', true));
+  if (params.outsideTarget === 'no') filter.push(where.ne('institution.outsideTarget', true));
+  if (params.maxScore !== undefined) filter.push(where.lte('relevance.score', params.maxScore));
   if (params.affiliation) {
     if (params.affiliation === 'unverified') filter.push(where.in('institution.affiliation.status', ['unverified', null as unknown as string]));
     else filter.push(where.eq('institution.affiliation.status', params.affiliation));
@@ -76,7 +109,9 @@ function buildQuery(params: z.infer<typeof listSchema>): Query {
       ? { 'person.name': 1 }
       : params.sort === 'newest'
         ? { createdAt: -1 }
-        : { 'relevance.score': -1, 'person.name': 1 };
+        : params.sort === 'works'
+          ? { 'research.worksCount': -1, 'person.name': 1 }
+          : { 'relevance.score': -1, 'person.name': 1 };
 
   return {
     filter,
@@ -89,9 +124,12 @@ function buildQuery(params: z.infer<typeof listSchema>): Query {
 rosterRouter.get(
   '/config',
   asyncHandler(async (_req, res) => {
+    const settings = await getSettings();
     res.json({
       institutions: INDIAN_INSTITUTIONS.map((i) => ({ id: i.openAlexId, name: i.name, kind: i.kind })),
       domains: DOMAIN_LABELS,
+      brands: settings.discovery.instrumentBrands.filter((b) => b.enabled).map((b) => ({ key: b.key, brand: b.brand, vendor: b.vendor })),
+      splitOptions: Object.entries(SPLIT_OPTIONS).map(([key, o]) => ({ key, label: o.label })),
       defaultThreshold: DEFAULT_PROMOTE_THRESHOLD,
     });
   }),
@@ -116,50 +154,42 @@ rosterRouter.get(
   }),
 );
 
-// GET /api/roster/export.csv — the current filter as CSV.
+/** Every member matching the filter, paged out of Mongo 500 at a time. */
+async function collectAll(query: Query): Promise<FacultyMember[]> {
+  const all: FacultyMember[] = [];
+  for (let skip = 0; ; skip += 500) {
+    const batch = await repositories.faculty.find({ ...query, options: { ...query.options, limit: 500, skip } });
+    all.push(...batch);
+    if (batch.length < 500) break;
+  }
+  return all;
+}
+
+// GET /api/roster/export.csv?…filters…&filename=
 rosterRouter.get(
   '/export.csv',
   asyncHandler(async (req, res) => {
     const parsed = listSchema.safeParse({ ...req.query, page: 1, limit: 500 });
     if (!parsed.success) throw ApiError.badRequest('Invalid query', parsed.error.flatten());
-    const query = buildQuery(parsed.data);
-    const all: FacultyMember[] = [];
-    for (let skip = 0; ; skip += 500) {
-      const batch = await repositories.faculty.find({ ...query, options: { ...query.options, limit: 500, skip } });
-      all.push(...batch);
-      if (batch.length < 500) break;
-    }
-    const cols: Array<[string, (m: FacultyMember) => unknown]> = [
-      ['Name', (m) => m.person.name],
-      ['Title', (m) => m.person.title],
-      ['Role', (m) => m.role.category],
-      ['Department', (m) => m.department.name],
-      ['Domain', (m) => DOMAIN_LABELS[m.department.domain]],
-      ['Institute', (m) => m.institution.name],
-      ['Discovered at', (m) => m.institution.discoveredName],
-      ['Affiliation status', (m) => m.institution.affiliation?.status],
-      ['Previous institution', (m) => m.institution.affiliation?.previousInstitution],
-      ['Email', (m) => m.person.email],
-      ['Phone', (m) => m.person.phone],
-      ['Website', (m) => m.person.websiteUrl],
-      ['Profile', (m) => m.person.profileUrl],
-      ['ORCID', (m) => m.person.orcid],
-      ['OpenAlex', (m) => m.person.openAlexAuthorId],
-      ['Relevance', (m) => m.relevance.score],
-      ['Instrument brands', (m) => m.research.instruments.map((i) => i.brand).join('; ')],
-      ['Instrument models', (m) => m.research.instruments.map((i) => i.model ?? '').join('; ')],
-      ['Sources', (m) => [...new Set(m.sources.map((s) => s.type))].join('; ')],
-      ['Status', (m) => m.status],
-      ['Tags', (m) => m.tags.join('; ')],
-    ];
-    const cell = (v: unknown) => {
-      const s = v === undefined || v === null ? '' : String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const lines = [cols.map(([h]) => cell(h)).join(','), ...all.map((m) => cols.map(([, f]) => cell(f(m))).join(','))];
+    const members = await collectAll(buildQuery(parsed.data));
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="faculty-${new Date().toISOString().slice(0, 10)}.csv"`);
-    res.send('\uFEFF' + lines.join('\r\n'));
+    res.setHeader('Content-Disposition', `attachment; filename="${exportFilename(typeof req.query.filename === 'string' ? req.query.filename : undefined, 'csv')}"`);
+    res.send(rosterToCsv(members));
+  }),
+);
+
+// GET /api/roster/export.xlsx?…filters…&filename=&splitBy=
+rosterRouter.get(
+  '/export.xlsx',
+  asyncHandler(async (req, res) => {
+    const parsed = listSchema.safeParse({ ...req.query, page: 1, limit: 500 });
+    if (!parsed.success) throw ApiError.badRequest('Invalid query', parsed.error.flatten());
+    const splitBy = typeof req.query.splitBy === 'string' && req.query.splitBy in SPLIT_OPTIONS ? req.query.splitBy : undefined;
+    const members = await collectAll(buildQuery(parsed.data));
+    const buffer = await rosterToXlsx(members, splitBy);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${exportFilename(typeof req.query.filename === 'string' ? req.query.filename : undefined, 'xlsx')}"`);
+    res.send(buffer);
   }),
 );
 

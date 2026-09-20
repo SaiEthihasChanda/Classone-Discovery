@@ -183,7 +183,15 @@ export function FacultyPage() {
   const [missing, setMissing] = useState('');
   const [q, setQ] = useState('');
   const [minScore, setMinScore] = useState(0);
-  const [sort, setSort] = useState<'score' | 'name' | 'newest'>('score');
+  const [maxScore, setMaxScore] = useState(100);
+  const [source, setSource] = useState('');
+  const [brand, setBrand] = useState('');
+  const [vendor, setVendor] = useState<'' | 'classone' | 'competitor' | 'none'>('');
+  const [hasEmail, setHasEmail] = useState<'' | 'yes' | 'no'>('');
+  const [hasTitle, setHasTitle] = useState<'' | 'yes' | 'no'>('');
+  const [hasPhone, setHasPhone] = useState<'' | 'yes' | 'no'>('');
+  const [outsideTarget, setOutsideTarget] = useState<'' | 'yes' | 'no'>('');
+  const [sort, setSort] = useState<'score' | 'name' | 'newest' | 'works'>('score');
   const [page, setPage] = useState(1);
   const params: RosterListParams = {
     status: status || undefined,
@@ -192,15 +200,47 @@ export function FacultyPage() {
     institutionId: institutionId || undefined,
     affiliation: affiliation || undefined,
     tag: tag || undefined,
+    source: source || undefined,
+    brand: brand || undefined,
+    vendor: vendor || undefined,
+    hasEmail: hasEmail || undefined,
+    hasTitle: hasTitle || undefined,
+    hasPhone: hasPhone || undefined,
+    outsideTarget: outsideTarget || undefined,
     scored: scored || undefined,
     missing: missing || undefined,
     q: q || undefined,
     minScore: minScore > 0 ? minScore : undefined,
+    maxScore: maxScore < 100 ? maxScore : undefined,
     sort,
     page,
     limit: 50,
   };
-  const { data, loading, error, reload } = useAsync(() => api.listRoster(params), [status, domain, role, institutionId, affiliation, tag, scored, missing, q, minScore, sort, page]);
+  const filterKey = JSON.stringify(params);
+  const { data, loading, error, reload } = useAsync(() => api.listRoster(params), [filterKey]);
+  const activeFilters = Object.entries(params).filter(([k, v]) => v !== undefined && !['sort', 'page', 'limit'].includes(k)).length;
+  const clearFilters = () => {
+    setStatus(''); setDomain(''); setRole(''); setInstitutionId(''); setAffiliation(''); setTag(''); setScored(''); setMissing(''); setQ('');
+    setMinScore(0); setMaxScore(100); setSource(''); setBrand(''); setVendor(''); setHasEmail(''); setHasTitle(''); setHasPhone(''); setOutsideTarget(''); setPage(1);
+  };
+
+  // Excel export dialog: file name + split-by column → one sheet per value.
+  const [excelOpen, setExcelOpen] = useState(false);
+  const [excelName, setExcelName] = useState('');
+  const [excelSplit, setExcelSplit] = useState('');
+  const defaultName = () => {
+    const inst = institutionId ? shortInstitute(config?.institutions.find((i) => i.id === institutionId)?.name ?? '').replace(/\s+/g, '-') : 'faculty';
+    return `${inst}-${status || 'all'}-${new Date().toISOString().slice(0, 10)}`.toLowerCase();
+  };
+  const downloadCsv = () => {
+    const name = window.prompt('File name for the CSV (without extension):', defaultName());
+    if (name === null) return;
+    window.location.href = api.rosterExportUrl(params, 'csv', { filename: name.trim() || defaultName() });
+  };
+  const downloadExcel = () => {
+    window.location.href = api.rosterExportUrl(params, 'xlsx', { filename: excelName.trim() || defaultName(), splitBy: excelSplit || undefined });
+    setExcelOpen(false);
+  };
 
   // Stage controls
   const [institutes, setInstitutes] = useState<string[]>([]);
@@ -393,9 +433,19 @@ export function FacultyPage() {
             Import CSV (Vidwan/IRINS export)
             <input type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={(e) => e.target.files?.[0] && void importCsv(e.target.files[0])} />
           </label>
-          <a className="btn btn-sm" href={api.rosterExportUrl(params)}>
-            Download CSV (this view)
-          </a>
+          <button className="btn btn-sm" onClick={downloadCsv} title="The current filtered view as CSV; you choose the file name">
+            Download CSV
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => {
+              setExcelName(defaultName());
+              setExcelOpen(true);
+            }}
+            title="The current filtered view as an Excel workbook, optionally split into one sheet per institute / department / brand / …"
+          >
+            Download Excel…
+          </button>
           <button className="btn btn-sm btn-danger" onClick={wipe} disabled={Boolean(running)}>
             Wipe roster
           </button>
@@ -423,6 +473,38 @@ export function FacultyPage() {
           <div className="tile">
             <div className="tile-value">{summary.byStatus.excluded ?? 0}</div>
             <div className="tile-label">Excluded (kept for audit)</div>
+          </div>
+        </div>
+      )}
+
+      {excelOpen && (
+        <div className="card card-pad" style={{ marginBottom: 16, borderColor: 'var(--accent)' }}>
+          <strong>Download Excel</strong>
+          <p className="small muted" style={{ margin: '4px 0 10px' }}>
+            Exports the {data?.total ?? 0} member{data?.total === 1 ? '' : 's'} matching the current filters. The workbook always has an <em>All</em> sheet; choose a column to add one sheet per value (a person with several brands or sources appears on each matching sheet).
+          </p>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <label style={{ margin: 0, flex: '1 1 260px' }}>
+              File name
+              <input value={excelName} onChange={(e) => setExcelName(e.target.value)} placeholder={defaultName()} />
+            </label>
+            <label style={{ margin: 0, flex: '0 1 260px' }}>
+              Split into sheets by
+              <select value={excelSplit} onChange={(e) => setExcelSplit(e.target.value)}>
+                <option value="">No split — one sheet</option>
+                {(config?.splitOptions ?? []).map((o) => (
+                  <option key={o.key} value={o.key}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="btn btn-primary btn-sm" onClick={downloadExcel}>
+              Download .xlsx
+            </button>
+            <button className="btn btn-sm" onClick={() => setExcelOpen(false)}>
+              Cancel
+            </button>
           </div>
         </div>
       )}
@@ -563,16 +645,66 @@ export function FacultyPage() {
           <option value="phone">Missing phone</option>
           <option value="websiteUrl">Missing website</option>
         </select>
+        <select value={source} onChange={(e) => { setSource(e.target.value); setPage(1); }} title="Source that contributed the person">
+          <option value="">Any source</option>
+          <option value="orcid">Seen on ORCID</option>
+          <option value="openalex">Seen on OpenAlex</option>
+          <option value="faculty_page">Seen on a faculty page</option>
+          <option value="vidwan">Seen on Vidwan</option>
+          <option value="vidwan_import">Imported CSV</option>
+        </select>
+        <select value={vendor} onChange={(e) => { setVendor(e.target.value as '' | 'classone' | 'competitor' | 'none'); setBrand(''); setPage(1); }}>
+          <option value="">Any instrument status</option>
+          <option value="classone">Class One brand owner</option>
+          <option value="competitor">Competitor owner</option>
+          <option value="none">No instrument found</option>
+        </select>
+        <select value={brand} onChange={(e) => { setBrand(e.target.value); setVendor(''); setPage(1); }}>
+          <option value="">Any brand</option>
+          {(config?.brands ?? []).map((b) => (
+            <option key={b.key} value={b.key}>
+              {b.brand}
+            </option>
+          ))}
+        </select>
+        <select value={hasEmail} onChange={(e) => { setHasEmail(e.target.value as '' | 'yes' | 'no'); setPage(1); }}>
+          <option value="">Email: any</option>
+          <option value="yes">Has email</option>
+          <option value="no">No email</option>
+        </select>
+        <select value={hasTitle} onChange={(e) => { setHasTitle(e.target.value as '' | 'yes' | 'no'); setPage(1); }}>
+          <option value="">Title: any</option>
+          <option value="yes">Has designation</option>
+          <option value="no">No designation</option>
+        </select>
+        <select value={hasPhone} onChange={(e) => { setHasPhone(e.target.value as '' | 'yes' | 'no'); setPage(1); }}>
+          <option value="">Phone: any</option>
+          <option value="yes">Has phone</option>
+          <option value="no">No phone</option>
+        </select>
+        <select value={outsideTarget} onChange={(e) => { setOutsideTarget(e.target.value as '' | 'yes' | 'no'); setPage(1); }}>
+          <option value="">Location: any</option>
+          <option value="no">At a target institute</option>
+          <option value="yes">Moved outside the list</option>
+        </select>
         <label className="small" style={{ margin: 0, fontWeight: 400, textTransform: 'none' }}>
-          Min score{' '}
-          <input type="number" min={0} max={100} value={minScore} onChange={(e) => { setMinScore(Number(e.target.value)); setPage(1); }} style={{ width: 70, display: 'inline-block' }} />
+          Score{' '}
+          <input type="number" min={0} max={100} value={minScore} onChange={(e) => { setMinScore(Number(e.target.value)); setPage(1); }} style={{ width: 62, display: 'inline-block' }} />
+          {' – '}
+          <input type="number" min={0} max={100} value={maxScore} onChange={(e) => { setMaxScore(Number(e.target.value)); setPage(1); }} style={{ width: 62, display: 'inline-block' }} />
         </label>
-        <select value={sort} onChange={(e) => setSort(e.target.value as 'score' | 'name' | 'newest')}>
+        <select value={sort} onChange={(e) => setSort(e.target.value as 'score' | 'name' | 'newest' | 'works')}>
           <option value="score">Sort: score</option>
           <option value="name">Sort: name</option>
+          <option value="works">Sort: publications</option>
           <option value="newest">Sort: newest</option>
         </select>
         {data && <span className="muted small">{data.total} member{data.total === 1 ? '' : 's'}</span>}
+        {activeFilters > 0 && (
+          <button className="btn btn-sm" onClick={clearFilters}>
+            Clear {activeFilters} filter{activeFilters === 1 ? '' : 's'}
+          </button>
+        )}
       </div>
 
       {error && <ErrorBanner message={error} />}

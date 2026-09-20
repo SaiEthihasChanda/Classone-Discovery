@@ -248,6 +248,8 @@ export interface RosterSummary {
 export interface RosterConfig {
   institutions: Array<{ id: string; name: string; kind: string }>;
   domains: Record<FacultyDomain, string>;
+  brands: Array<{ key: string; brand: string; vendor: 'classone' | 'competitor' }>;
+  splitOptions: Array<{ key: string; label: string }>;
   defaultThreshold: number;
 }
 

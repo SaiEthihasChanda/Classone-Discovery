@@ -521,6 +521,56 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.match(text.split('\n')[0]!, /Relevance/);
   });
 
+  await check('new list filters: source, brand/vendor, hasEmail, maxScore, comma-separated domains', async () => {
+    const vid = await request('/roster?source=vidwan');
+    assert.ok(vid.body.total >= 2, `vidwan-sourced: ${vid.body.total}`);
+    const twoDomains = await request('/roster?domain=chemistry,energy&status=eligible');
+    const chemOnly = await request('/roster?domain=chemistry&status=eligible');
+    assert.ok(twoDomains.body.total > chemOnly.body.total, 'two domains return more than one');
+    const withEmail = await request('/roster?hasEmail=yes');
+    const noEmail = await request('/roster?hasEmail=no');
+    const all = await request('/roster');
+    assert.equal(withEmail.body.total + noEmail.body.total, all.body.total, 'hasEmail yes+no covers everyone');
+    // Give one member a sighting so the instrument filters have something to find.
+    const vermaM = await repositories.faculty.findSamePerson({ openAlexAuthorId: 'A5000000002', normalizedNameKey: '' });
+    await repositories.faculty.updateById(vermaM!.id, { research: { instruments: [{ brandKey: 'palmsens', brand: 'PalmSens', vendor: 'classone', model: 'PalmSens4', evidence: 'test', matchedVia: 'fulltext_search' }] } });
+    const owners = await request('/roster?vendor=classone');
+    assert.equal(owners.body.total, 1, 'one PalmSens owner on the test roster');
+    const byBrand = await request('/roster?brand=palmsens');
+    assert.equal(byBrand.body.total, 1);
+    const none = await request('/roster?vendor=none');
+    assert.equal(none.body.total, all.body.total - 1);
+    const low = await request('/roster?maxScore=30&scored=yes');
+    assert.ok(low.body.items.every((m: { relevance: { score: number } }) => m.relevance.score <= 30));
+  });
+
+  await check('GET /roster/export.xlsx returns a workbook split into one sheet per value plus "All"', async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const res = await fetch('http://localhost:4999/api/roster/export.xlsx?splitBy=domain&filename=my%20export');
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') ?? '', /spreadsheetml/);
+    assert.match(res.headers.get('content-disposition') ?? '', /filename="my export.xlsx"/);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(await res.arrayBuffer());
+    const names = wb.worksheets.map((w) => w.name);
+    assert.equal(names[0], 'All');
+    assert.ok(names.includes('Chemistry'), `sheets: ${names.join(', ')}`);
+    const all = wb.getWorksheet('All')!;
+    const total = (await request('/roster')).body.total as number;
+    assert.equal(all.rowCount - 1, total, 'All sheet holds every member');
+    assert.equal(String(all.getRow(1).getCell(1).value), 'Name');
+    const sumSplit = wb.worksheets.slice(1).reduce((n, w) => n + w.rowCount - 1, 0);
+    assert.equal(sumSplit, total, 'domain is single-valued, so the split sheets add up to the total');
+    const byBrand = new ExcelJS.Workbook();
+    const r2 = await fetch('http://localhost:4999/api/roster/export.xlsx?splitBy=brand');
+    await byBrand.xlsx.load(await r2.arrayBuffer());
+    assert.ok(byBrand.worksheets.some((w) => w.name === 'PalmSens'), `brand sheets: ${byBrand.worksheets.map((w) => w.name).join(', ')}`);
+    const csv = await fetch('http://localhost:4999/api/roster/export.csv?filename=x%2Fy');
+    assert.match(csv.headers.get('content-disposition') ?? '', /filename="x_y.csv"/, 'unsafe characters in the file name are replaced');
+    const vermaM = await repositories.faculty.findSamePerson({ openAlexAuthorId: 'A5000000002', normalizedNameKey: '' });
+    await repositories.faculty.updateById(vermaM!.id, { research: { instruments: [] } });
+  });
+
   await check('PATCH /roster/:id excludes and restores a member; a promoted one is refused', async () => {
     const verma = await repositories.faculty.findSamePerson({ openAlexAuthorId: 'A5000000002', normalizedNameKey: '' });
     const ex = await request(`/roster/${verma!.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'excluded', reason: 'not a buyer' }) });

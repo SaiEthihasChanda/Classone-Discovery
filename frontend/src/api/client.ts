@@ -280,10 +280,12 @@ export const api = {
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '' && v !== null) q.set(k, String(v));
     return request<Paginated<FacultyMember> & { page: number }>(`/roster?${q.toString()}`);
   },
-  rosterExportUrl: (params: RosterListParams = {}) => {
+  rosterExportUrl: (params: RosterListParams = {}, format: 'csv' | 'xlsx' = 'csv', extra: { filename?: string; splitBy?: string } = {}) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '' && v !== null && k !== 'page' && k !== 'limit') q.set(k, String(v));
-    return `${BASE_URL}/roster/export.csv?${q.toString()}`;
+    if (extra.filename) q.set('filename', extra.filename);
+    if (extra.splitBy) q.set('splitBy', extra.splitBy);
+    return `${BASE_URL}/roster/export.${format}?${q.toString()}`;
   },
   getRosterMember: (id: string) => request<{ member: FacultyMember }>(`/roster/${id}`),
   setRosterStatus: (id: string, status: 'eligible' | 'excluded', reason?: string) =>
@@ -319,16 +321,25 @@ export const api = {
 
 export interface RosterListParams {
   status?: string;
+  /** Comma-separated for several. */
   domain?: string;
   role?: string;
   institutionId?: string;
   affiliation?: string;
   tag?: string;
+  source?: string;
+  brand?: string;
+  vendor?: 'classone' | 'competitor' | 'none';
+  hasEmail?: 'yes' | 'no';
+  hasTitle?: 'yes' | 'no';
+  hasPhone?: 'yes' | 'no';
+  outsideTarget?: 'yes' | 'no';
   minScore?: number;
+  maxScore?: number;
   scored?: 'yes' | 'no';
   missing?: string;
   q?: string;
-  sort?: 'score' | 'name' | 'newest';
+  sort?: 'score' | 'name' | 'newest' | 'works';
   page?: number;
   limit?: number;
 }
