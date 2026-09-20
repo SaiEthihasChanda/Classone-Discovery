@@ -99,6 +99,60 @@ function InstitutePicker({
   );
 }
 
+/**
+ * A checklist in a popover: the filter's label shows what is selected. Nothing
+ * ticked means "any". Long lists (institutes) get a text filter inside.
+ */
+function MultiSelect({
+  label,
+  options,
+  selected,
+  onChange,
+  searchable = false,
+  title,
+}: {
+  label: string;
+  options: Array<{ value: string; label: string; hint?: string }>;
+  selected: string[];
+  onChange: (next: string[]) => void;
+  searchable?: boolean;
+  title?: string;
+}) {
+  const [filter, setFilter] = useState('');
+  const toggle = (v: string) => onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+  const term = filter.trim().toLowerCase();
+  const shown = term ? options.filter((o) => o.label.toLowerCase().includes(term)) : options;
+  const summary =
+    selected.length === 0
+      ? label
+      : selected.length === 1
+        ? (options.find((o) => o.value === selected[0])?.label ?? selected[0])
+        : `${label}: ${selected.length}`;
+  return (
+    <details className="dropdown" title={title}>
+      <summary className={`btn btn-sm${selected.length > 0 ? ' btn-primary' : ''}`}>{summary} ▾</summary>
+      <div className="dropdown-menu" style={{ minWidth: 260, maxHeight: 360, overflowY: 'auto' }}>
+        {searchable && <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter…" style={{ marginBottom: 8 }} />}
+        {selected.length > 0 && (
+          <button className="btn btn-sm" style={{ marginBottom: 6 }} onClick={() => onChange([])}>
+            Clear
+          </button>
+        )}
+        {shown.map((o) => (
+          <label key={o.value} className="dropdown-option">
+            <input type="checkbox" checked={selected.includes(o.value)} onChange={() => toggle(o.value)} style={{ width: 'auto' }} />
+            <span>
+              {o.label}
+              {o.hint && <span className="muted small"> {o.hint}</span>}
+            </span>
+          </label>
+        ))}
+        {shown.length === 0 && <p className="muted small">Nothing matches.</p>}
+      </div>
+    </details>
+  );
+}
+
 /** Live view of one job: stage line, progress bar, counters, last log lines. */
 function JobPanel({ job, onCancel }: { job: RosterJob; onCancel: () => void }) {
   const running = job.status === 'running';
@@ -173,19 +227,19 @@ export function FacultyPage() {
   const { data: summary, reload: reloadSummary } = useAsync(() => api.rosterSummary(), []);
 
   // Filters
-  const [status, setStatus] = useState<string>('eligible');
-  const [domain, setDomain] = useState('');
-  const [role, setRole] = useState('');
-  const [institutionId, setInstitutionId] = useState('');
-  const [affiliation, setAffiliation] = useState('');
-  const [tag, setTag] = useState('');
+  const [status, setStatus] = useState<string[]>(['eligible']);
+  const [domain, setDomain] = useState<string[]>([]);
+  const [role, setRole] = useState<string[]>([]);
+  const [institutionId, setInstitutionId] = useState<string[]>([]);
+  const [affiliation, setAffiliation] = useState<string[]>([]);
+  const [tag, setTag] = useState<string[]>([]);
   const [scored, setScored] = useState<'' | 'yes' | 'no'>('');
   const [missing, setMissing] = useState('');
   const [q, setQ] = useState('');
   const [minScore, setMinScore] = useState(0);
   const [maxScore, setMaxScore] = useState(100);
-  const [source, setSource] = useState('');
-  const [brand, setBrand] = useState('');
+  const [source, setSource] = useState<string[]>([]);
+  const [brand, setBrand] = useState<string[]>([]);
   const [vendor, setVendor] = useState<'' | 'classone' | 'competitor' | 'none'>('');
   const [hasEmail, setHasEmail] = useState<'' | 'yes' | 'no'>('');
   const [hasTitle, setHasTitle] = useState<'' | 'yes' | 'no'>('');
@@ -194,14 +248,14 @@ export function FacultyPage() {
   const [sort, setSort] = useState<'score' | 'name' | 'newest' | 'works'>('score');
   const [page, setPage] = useState(1);
   const params: RosterListParams = {
-    status: status || undefined,
-    domain: domain || undefined,
-    role: role || undefined,
-    institutionId: institutionId || undefined,
-    affiliation: affiliation || undefined,
-    tag: tag || undefined,
-    source: source || undefined,
-    brand: brand || undefined,
+    status: status.join(',') || undefined,
+    domain: domain.join(',') || undefined,
+    role: role.join(',') || undefined,
+    institutionId: institutionId.join(',') || undefined,
+    affiliation: affiliation.join(',') || undefined,
+    tag: tag.join(',') || undefined,
+    source: source.join(',') || undefined,
+    brand: brand.join(',') || undefined,
     vendor: vendor || undefined,
     hasEmail: hasEmail || undefined,
     hasTitle: hasTitle || undefined,
@@ -220,8 +274,8 @@ export function FacultyPage() {
   const { data, loading, error, reload } = useAsync(() => api.listRoster(params), [filterKey]);
   const activeFilters = Object.entries(params).filter(([k, v]) => v !== undefined && !['sort', 'page', 'limit'].includes(k)).length;
   const clearFilters = () => {
-    setStatus(''); setDomain(''); setRole(''); setInstitutionId(''); setAffiliation(''); setTag(''); setScored(''); setMissing(''); setQ('');
-    setMinScore(0); setMaxScore(100); setSource(''); setBrand(''); setVendor(''); setHasEmail(''); setHasTitle(''); setHasPhone(''); setOutsideTarget(''); setPage(1);
+    setStatus([]); setDomain([]); setRole([]); setInstitutionId([]); setAffiliation([]); setTag([]); setScored(''); setMissing(''); setQ('');
+    setMinScore(0); setMaxScore(100); setSource([]); setBrand([]); setVendor(''); setHasEmail(''); setHasTitle(''); setHasPhone(''); setOutsideTarget(''); setPage(1);
   };
 
   // Excel export dialog: file name + split-by column → one sheet per value.
@@ -229,8 +283,8 @@ export function FacultyPage() {
   const [excelName, setExcelName] = useState('');
   const [excelSplit, setExcelSplit] = useState('');
   const defaultName = () => {
-    const inst = institutionId ? shortInstitute(config?.institutions.find((i) => i.id === institutionId)?.name ?? '').replace(/\s+/g, '-') : 'faculty';
-    return `${inst}-${status || 'all'}-${new Date().toISOString().slice(0, 10)}`.toLowerCase();
+    const inst = institutionId.length === 1 ? shortInstitute(config?.institutions.find((i) => i.id === institutionId[0])?.name ?? '').replace(/\s+/g, '-') : 'faculty';
+    return `${inst}-${status.length === 1 ? status[0] : 'all'}-${new Date().toISOString().slice(0, 10)}`.toLowerCase();
   };
   const downloadCsv = () => {
     const name = window.prompt('File name for the CSV (without extension):', defaultName());
@@ -585,58 +639,81 @@ export function FacultyPage() {
       </div>
 
       <div className="toolbar">
-        <input placeholder="Search name, email, department…" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} />
-        <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
-          <option value="">Any status</option>
-          <option value="eligible">Eligible</option>
-          <option value="promoted">Promoted</option>
-          <option value="excluded">Excluded</option>
-        </select>
-        <select value={institutionId} onChange={(e) => { setInstitutionId(e.target.value); setPage(1); }}>
-          <option value="">All institutes</option>
-          {(summary?.byInstitution ?? []).map((i) => {
-            const id = config?.institutions.find((c) => c.name === i.name)?.id;
-            return id ? (
-              <option key={id} value={id}>
-                {shortInstitute(i.name)} ({i.eligible + i.promoted})
-              </option>
-            ) : null;
-          })}
-        </select>
-        <select value={domain} onChange={(e) => { setDomain(e.target.value); setPage(1); }}>
-          <option value="">All departments</option>
-          {Object.entries(config?.domains ?? {}).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </select>
-        <select value={role} onChange={(e) => { setRole(e.target.value); setPage(1); }}>
-          <option value="">Any role</option>
-          {Object.entries(ROLE_LABELS).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </select>
-        <select value={affiliation} onChange={(e) => { setAffiliation(e.target.value); setPage(1); }}>
-          <option value="">Any affiliation</option>
-          <option value="current">Current</option>
-          <option value="moved">Moved</option>
-          <option value="unknown">Unknown (blanked)</option>
-          <option value="unverified">Unverified</option>
+        <input
+          placeholder="Search — name, email, title, department, topics; typos and initials are fine"
+          value={q}
+          onChange={(e) => { setQ(e.target.value); setPage(1); }}
+          style={{ minWidth: 300 }}
+        />
+        <MultiSelect
+          label="Status"
+          options={[{ value: 'eligible', label: 'Eligible' }, { value: 'promoted', label: 'Promoted' }, { value: 'excluded', label: 'Excluded' }]}
+          selected={status}
+          onChange={(v) => { setStatus(v); setPage(1); }}
+        />
+        <MultiSelect
+          label="Institutes"
+          searchable
+          options={(summary?.byInstitution ?? [])
+            .map((i) => ({ id: config?.institutions.find((c) => c.name === i.name)?.id, name: i.name, n: i.eligible + i.promoted }))
+            .filter((i): i is { id: string; name: string; n: number } => Boolean(i.id))
+            .map((i) => ({ value: i.id, label: shortInstitute(i.name), hint: `(${i.n})` }))}
+          selected={institutionId}
+          onChange={(v) => { setInstitutionId(v); setPage(1); }}
+        />
+        <MultiSelect
+          label="Departments"
+          options={Object.entries(config?.domains ?? {}).map(([k, v]) => ({ value: k, label: v }))}
+          selected={domain}
+          onChange={(v) => { setDomain(v); setPage(1); }}
+        />
+        <MultiSelect
+          label="Roles"
+          options={Object.entries(ROLE_LABELS).map(([k, v]) => ({ value: k, label: v }))}
+          selected={role}
+          onChange={(v) => { setRole(v); setPage(1); }}
+        />
+        <MultiSelect
+          label="Affiliation"
+          options={[{ value: 'current', label: 'Current' }, { value: 'moved', label: 'Moved' }, { value: 'unknown', label: 'Unknown (blanked)' }, { value: 'unverified', label: 'Unverified' }]}
+          selected={affiliation}
+          onChange={(v) => { setAffiliation(v); setPage(1); }}
+        />
+        <MultiSelect
+          label="Sources"
+          title="Where the person was seen"
+          options={[
+            { value: 'orcid', label: 'ORCID' },
+            { value: 'openalex', label: 'OpenAlex' },
+            { value: 'faculty_page', label: 'Faculty page' },
+            { value: 'vidwan', label: 'Vidwan' },
+            { value: 'vidwan_import', label: 'Imported CSV' },
+          ]}
+          selected={source}
+          onChange={(v) => { setSource(v); setPage(1); }}
+        />
+        <MultiSelect
+          label="Brands"
+          options={(config?.brands ?? []).map((b) => ({ value: b.key, label: b.brand, hint: b.vendor === 'classone' ? '(Class One)' : undefined }))}
+          selected={brand}
+          onChange={(v) => { setBrand(v); setVendor(''); setPage(1); }}
+        />
+        <MultiSelect
+          label="Tags"
+          options={['role-inferred', 'always-keep', 'instrument-owner', 'electrochem-gate', 'outside-departments', 'outside-target', 'review-role', 'instruments-swept', 'instruments-scanned'].map((t) => ({ value: t, label: t }))}
+          selected={tag}
+          onChange={(v) => { setTag(v); setPage(1); }}
+        />
+        <select value={vendor} onChange={(e) => { setVendor(e.target.value as '' | 'classone' | 'competitor' | 'none'); setBrand([]); setPage(1); }}>
+          <option value="">Any instrument status</option>
+          <option value="classone">Class One brand owner</option>
+          <option value="competitor">Competitor owner</option>
+          <option value="none">No instrument found</option>
         </select>
         <select value={scored} onChange={(e) => { setScored(e.target.value as '' | 'yes' | 'no'); setPage(1); }}>
           <option value="">Scored or not</option>
           <option value="yes">Scored</option>
           <option value="no">Not scored</option>
-        </select>
-        <select value={tag} onChange={(e) => { setTag(e.target.value); setPage(1); }}>
-          <option value="">Any tag</option>
-          <option value="role-inferred">role-inferred</option>
-          <option value="outside-target">outside-target</option>
-          <option value="review-role">review-role</option>
-          <option value="instruments-scanned">instruments-scanned</option>
         </select>
         <select value={missing} onChange={(e) => { setMissing(e.target.value); setPage(1); }}>
           <option value="">Missing…</option>
@@ -644,28 +721,6 @@ export function FacultyPage() {
           <option value="title">Missing title</option>
           <option value="phone">Missing phone</option>
           <option value="websiteUrl">Missing website</option>
-        </select>
-        <select value={source} onChange={(e) => { setSource(e.target.value); setPage(1); }} title="Source that contributed the person">
-          <option value="">Any source</option>
-          <option value="orcid">Seen on ORCID</option>
-          <option value="openalex">Seen on OpenAlex</option>
-          <option value="faculty_page">Seen on a faculty page</option>
-          <option value="vidwan">Seen on Vidwan</option>
-          <option value="vidwan_import">Imported CSV</option>
-        </select>
-        <select value={vendor} onChange={(e) => { setVendor(e.target.value as '' | 'classone' | 'competitor' | 'none'); setBrand(''); setPage(1); }}>
-          <option value="">Any instrument status</option>
-          <option value="classone">Class One brand owner</option>
-          <option value="competitor">Competitor owner</option>
-          <option value="none">No instrument found</option>
-        </select>
-        <select value={brand} onChange={(e) => { setBrand(e.target.value); setVendor(''); setPage(1); }}>
-          <option value="">Any brand</option>
-          {(config?.brands ?? []).map((b) => (
-            <option key={b.key} value={b.key}>
-              {b.brand}
-            </option>
-          ))}
         </select>
         <select value={hasEmail} onChange={(e) => { setHasEmail(e.target.value as '' | 'yes' | 'no'); setPage(1); }}>
           <option value="">Email: any</option>

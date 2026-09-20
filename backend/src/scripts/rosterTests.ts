@@ -525,6 +525,15 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(inferred.body.total, 1);
     const search = await request('/roster?q=verma');
     assert.equal(search.body.total, 1);
+    const typo = await request('/roster?q=talur');
+    assert.ok(typo.body.items.some((m: { person: { name: string } }) => m.person.name === 'Siddharth Tallur'), 'a one-letter typo still finds him');
+    const initials = await request('/roster?q=s%20tallur');
+    assert.equal(initials.body.items[0]?.person.name, 'Siddharth Tallur', 'initial + surname');
+    const twoStatuses = await request('/roster?status=eligible,promoted');
+    const onlyEligible = await request('/roster?status=eligible');
+    assert.ok(twoStatuses.body.total > onlyEligible.body.total, 'multi-status returns more than one status');
+    const byOrcid = await request('/roster?q=0000-0002-0001-0002');
+    assert.equal(byOrcid.body.items[0]?.person.name, 'Anil Kumar', 'an ORCID typed into the box matches by substring');
     const summary = await request('/roster/summary');
     assert.equal(summary.body.total, 8);
     assert.equal(summary.body.byStatus.promoted, 1);
@@ -560,6 +569,22 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(none.body.total, all.body.total - 1);
     const low = await request('/roster?maxScore=30&scored=yes');
     assert.ok(low.body.items.every((m: { relevance: { score: number } }) => m.relevance.score <= 30));
+  });
+
+  await check('fuzzy scoring: whole-word matching, typos, initials, no substring bleed', async () => {
+    const { fuzzyScore, tokenScore } = await import('../services/roster/fuzzy.js');
+    const tallur = { name: 'Siddharth Tallur', department: 'Electrical Engineering', institution: 'Indian Institute of Technology Bombay' };
+    const mems = { name: 'I. Samajdar', department: 'Metallurgical Engineering and Materials Science', institution: 'Indian Institute of Technology Bombay' };
+    assert.ok(fuzzyScore('tallur', tallur) >= 0.95);
+    assert.equal(fuzzyScore('tallur', mems), 0, '"tallur" must not match "metallurgical"');
+    assert.ok(fuzzyScore('talur', tallur) >= 0.8, 'one edit away');
+    assert.ok(fuzzyScore('sidharth talur', tallur) >= 0.8, 'two typos across two tokens');
+    assert.ok(fuzzyScore('s tallur', tallur) >= 0.8, 'initial + surname');
+    assert.equal(fuzzyScore('tallur zzzz', tallur), 0, 'every token must match');
+    assert.ok(fuzzyScore('electrical', tallur) > 0.8, 'department words count');
+    assert.ok(fuzzyScore('metallurg', mems) > 0.8, 'prefix of a department word');
+    assert.equal(tokenScore('bombay', 'bombay'), 1);
+    assert.ok(tokenScore('mumbai', 'bombay') === 0);
   });
 
   await check('GET /roster/export.xlsx returns a workbook split into one sheet per value plus "All"', async () => {

@@ -31,6 +31,7 @@ import {
 } from '../services/roster/rosterRelevance.js';
 import type { FacultyMember } from '../types/domain.js';
 import { exportFilename, rosterToCsv, rosterToXlsx, SPLIT_OPTIONS } from '../services/roster/rosterExport.js';
+import { fuzzyFilter, memberFields } from '../services/roster/fuzzy.js';
 import { getSettings } from '../services/settings/settingsService.js';
 
 export const rosterRouter = Router();
@@ -45,12 +46,12 @@ const objectId = z.string().regex(/^[a-f\d]{24}$/i);
 const csv = z.string().transform((v) => v.split(',').map((x) => x.trim()).filter(Boolean)).optional();
 
 const listSchema = z.object({
-  status: z.enum(['eligible', 'excluded', 'promoted']).optional(),
+  status: csv,
   domain: csv,
   role: csv,
-  institutionId: z.string().optional(),
-  affiliation: z.enum(['current', 'moved', 'unknown', 'unverified']).optional(),
-  tag: z.string().optional(),
+  institutionId: csv,
+  affiliation: csv,
+  tag: csv,
   /** Source that contributed the member: orcid | openalex | faculty_page | vidwan | vidwan_import. */
   source: csv,
   /** Instrument brand key ("palmsens") or "any" / "none". */
@@ -72,10 +73,10 @@ const listSchema = z.object({
 
 function buildQuery(params: z.infer<typeof listSchema>): Query {
   const filter: Filter = [];
-  if (params.status) filter.push(where.eq('status', params.status));
+  if (params.status?.length) filter.push(where.in('status', params.status));
   if (params.domain?.length) filter.push(where.in('department.domain', params.domain));
   if (params.role?.length) filter.push(where.in('role.category', params.role));
-  if (params.institutionId) filter.push(where.eq('institution.discoveredOpenAlexId', params.institutionId));
+  if (params.institutionId?.length) filter.push(where.in('institution.discoveredOpenAlexId', params.institutionId));
   if (params.source?.length) filter.push(where.in('sources.type', params.source));
   if (params.brand?.length) {
     if (params.brand.includes('none')) filter.push(where.eq('research.instruments', []));
@@ -94,11 +95,12 @@ function buildQuery(params: z.infer<typeof listSchema>): Query {
   if (params.outsideTarget === 'yes') filter.push(where.eq('institution.outsideTarget', true));
   if (params.outsideTarget === 'no') filter.push(where.ne('institution.outsideTarget', true));
   if (params.maxScore !== undefined) filter.push(where.lte('relevance.score', params.maxScore));
-  if (params.affiliation) {
-    if (params.affiliation === 'unverified') filter.push(where.in('institution.affiliation.status', ['unverified', null as unknown as string]));
-    else filter.push(where.eq('institution.affiliation.status', params.affiliation));
+  if (params.affiliation?.length) {
+    // "unverified" also means "never checked" (no affiliation subdocument at all).
+    const values: unknown[] = params.affiliation.includes('unverified') ? [...params.affiliation, null] : params.affiliation;
+    filter.push(where.in('institution.affiliation.status', values));
   }
-  if (params.tag) filter.push(where.contains('tags', params.tag));
+  if (params.tag?.length) filter.push(where.in('tags', params.tag));
   if (params.minScore !== undefined) filter.push(where.gte('relevance.score', params.minScore));
   if (params.scored === 'yes') filter.push(where.ne('relevance.score', null));
   if (params.scored === 'no') filter.push(where.eq('relevance.score', null));
@@ -115,9 +117,32 @@ function buildQuery(params: z.infer<typeof listSchema>): Query {
 
   return {
     filter,
-    ...(params.q ? { search: { term: params.q, fields: ['person.name', 'person.email', 'department.name', 'institution.name'] } } : {}),
     options: { limit: params.limit, skip: (params.page - 1) * params.limit, sort },
   };
+}
+
+/**
+ * The list a filter set produces. With a search term the candidates that pass
+ * the other filters are fuzzy-scored in memory (see `services/roster/fuzzy.ts`)
+ * and paged from the ranked list; without one, Mongo pages them directly.
+ */
+async function queryMembers(params: z.infer<typeof listSchema>): Promise<{ items: FacultyMember[]; total: number }> {
+  const query = buildQuery(params);
+  if (!params.q?.trim()) {
+    const page = await repositories.faculty.findPaginated(query);
+    return { items: page.items, total: page.total };
+  }
+  const all = await collectAll(query);
+  const ranked = fuzzyFilter(params.q, all, memberFields).map((r) => r.item);
+  const skip = (params.page - 1) * params.limit;
+  return { items: ranked.slice(skip, skip + params.limit), total: ranked.length };
+}
+
+/** Every member matching the filter (search included), in ranked or sorted order. */
+async function queryAllMembers(params: z.infer<typeof listSchema>): Promise<FacultyMember[]> {
+  const query = buildQuery(params);
+  const all = await collectAll(query);
+  return params.q?.trim() ? fuzzyFilter(params.q, all, memberFields).map((r) => r.item) : all;
 }
 
 // GET /api/roster/config — institutes and labels the page needs.
@@ -149,8 +174,8 @@ rosterRouter.get(
   asyncHandler(async (req, res) => {
     const parsed = listSchema.safeParse(req.query);
     if (!parsed.success) throw ApiError.badRequest('Invalid query', parsed.error.flatten());
-    const page = await repositories.faculty.findPaginated(buildQuery(parsed.data));
-    res.json({ ...page, page: parsed.data.page });
+    const { items, total } = await queryMembers(parsed.data);
+    res.json({ items, total, limit: parsed.data.limit, skip: (parsed.data.page - 1) * parsed.data.limit, page: parsed.data.page });
   }),
 );
 
@@ -171,7 +196,7 @@ rosterRouter.get(
   asyncHandler(async (req, res) => {
     const parsed = listSchema.safeParse({ ...req.query, page: 1, limit: 500 });
     if (!parsed.success) throw ApiError.badRequest('Invalid query', parsed.error.flatten());
-    const members = await collectAll(buildQuery(parsed.data));
+    const members = await queryAllMembers(parsed.data);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${exportFilename(typeof req.query.filename === 'string' ? req.query.filename : undefined, 'csv')}"`);
     res.send(rosterToCsv(members));
@@ -185,7 +210,7 @@ rosterRouter.get(
     const parsed = listSchema.safeParse({ ...req.query, page: 1, limit: 500 });
     if (!parsed.success) throw ApiError.badRequest('Invalid query', parsed.error.flatten());
     const splitBy = typeof req.query.splitBy === 'string' && req.query.splitBy in SPLIT_OPTIONS ? req.query.splitBy : undefined;
-    const members = await collectAll(buildQuery(parsed.data));
+    const members = await queryAllMembers(parsed.data);
     const buffer = await rosterToXlsx(members, splitBy);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${exportFilename(typeof req.query.filename === 'string' ? req.query.filename : undefined, 'xlsx')}"`);
