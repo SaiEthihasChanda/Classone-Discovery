@@ -366,6 +366,8 @@ export type FacultyDomain =
   | 'biochemical_engineering'
   | 'materials'
   | 'energy'
+  /** Added 20 Sep 2026 at the owner's request: sensor/MEMS groups in EE buy potentiostats too. */
+  | 'electrical'
   | 'civil'
   | 'mechanical'
   | 'other';

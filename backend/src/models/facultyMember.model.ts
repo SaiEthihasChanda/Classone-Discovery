@@ -80,6 +80,7 @@ const facultyMemberSchema = new Schema(
           'biochemical_engineering',
           'materials',
           'energy',
+          'electrical',
           'civil',
           'mechanical',
           'other',

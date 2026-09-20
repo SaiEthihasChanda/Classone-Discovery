@@ -185,6 +185,7 @@ export type FacultyDomain =
   | 'biochemical_engineering'
   | 'materials'
   | 'energy'
+  | 'electrical'
   | 'civil'
   | 'mechanical'
   | 'other';

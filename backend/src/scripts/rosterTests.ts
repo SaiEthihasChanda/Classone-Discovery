@@ -85,7 +85,8 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(domainFromTopics([{ field: 'Physics and Astronomy', count: 40 }, { field: 'Materials Science', count: 6 }]), 'other', 'one materials topic does not make a physicist a materials scientist');
     assert.equal(decideDomain({ department: 'Department of Physics', topics: [{ field: 'Chemistry', subfield: 'Electrochemistry', count: 30 }] }).kept, true, 'a physicist with electrochemistry topics passes the gate');
     assert.equal(decideDomain({ department: 'Department of Physics', topics: [{ field: 'Chemistry', subfield: 'Electrochemistry', count: 30 }] }).gate, 'electrochemistry');
-    assert.equal(decideDomain({ department: 'Electrical Engineering', topics: [{ field: 'Materials Science', count: 30 }] }).kept, false, 'a stated out-of-list department is not overridden by topics');
+    assert.equal(decideDomain({ department: 'Electrical Engineering' }).domain, 'electrical', 'EE is a kept department since 20 Sep 2026');
+    assert.equal(decideDomain({ department: 'Computer Science and Engineering', topics: [{ field: 'Materials Science', count: 30 }] }).kept, false, 'a stated out-of-list department is not overridden by topics');
   });
 
   await check('civil and mechanical engineering pass only with corrosion-related work', () => {
@@ -219,8 +220,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(tallur.role.category, 'professor');
     assert.equal(tallur.institution.affiliation?.source, 'vidwan', 'a Vidwan profile at the institute outranks ORCID as the placement source');
     assert.ok(tallur.institution.affiliation?.evidence?.some((e) => e.source === 'orcid'), 'ORCID evidence still recorded');
-    assert.equal(tallur.department.domain, 'other', 'a stated EE department is outside the list…');
-    assert.ok(tallur.tags.includes('always-keep') || tallur.tags.includes('electrochem-gate'), '…but the always-keep seed (or his electrochemical topics) keeps him');
+    assert.equal(tallur.department.domain, 'electrical', 'EE is a kept department');
     assert.equal(tallur.institution.affiliation?.status, 'current', 'a current ORCID employment settles it at build time');
     assert.equal(tallur.institution.discoveredOpenAlexId, IITB_ID);
   });
@@ -421,8 +421,8 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.ok(m, 'admitted to the roster');
     assert.equal(m.role.category, 'professor');
     assert.equal(m.department.name, 'Electrical Engineering');
-    assert.equal(m.department.domain, 'other');
-    assert.ok(m.tags.includes('instrument-owner') && m.tags.includes('outside-departments'), `tags: ${m.tags}`);
+    assert.equal(m.department.domain, 'electrical');
+    assert.ok(m.tags.includes('instrument-owner'), `tags: ${m.tags}`);
     assert.equal(m.research.instruments[0]!.model, 'PalmSens4');
     assert.equal(m.institution.affiliation?.source, 'orcid');
     assert.ok((m.relevance.score ?? 0) >= 40, `scored ${m.relevance.score} — a PalmSens owner must clear the bar`);

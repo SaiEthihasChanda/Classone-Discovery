@@ -19,6 +19,7 @@ export const KEPT_DOMAINS: ReadonlySet<FacultyDomain> = new Set([
   'biochemical_engineering',
   'materials',
   'energy',
+  'electrical',
 ]);
 
 /** Domains kept only past the corrosion gate. */
@@ -32,6 +33,7 @@ export const DOMAIN_LABELS: Record<FacultyDomain, string> = {
   biochemical_engineering: 'Biochemical Engineering',
   materials: 'Materials / Metallurgy',
   energy: 'Energy',
+  electrical: 'Electrical Engineering',
   civil: 'Civil Engineering (corrosion)',
   mechanical: 'Mechanical Engineering (corrosion)',
   other: 'Other',
@@ -63,6 +65,7 @@ const DEPARTMENT_RULES: Array<[RegExp, FacultyDomain]> = [
   [/\b(biolog|bio-?sciences?|life\s+sciences?|biological\s+sciences?|microbiolog|zoolog|botan|neuroscience|genetics|molecular)/i, 'biology'],
   [/\b(metallurg|materials?\b|nano-?(science|technology|materials?)|ceramic|polymer\s+(science|engineering|technology))/i, 'materials'],
   [/\b(energy|solar|photovoltaic|battery|hydrogen|fuel\s+cell|electrochem)/i, 'energy'],
+  [/\b(electrical|electronics?|ee|ece|eee)\b/i, 'electrical'],
   [/\b(civil|structural|construction|infrastructure|ocean\s+eng|coastal)\b/i, 'civil'],
   [/\b(mechanical|manufactur|production\s+eng|industrial\s+eng|automobile)\b/i, 'mechanical'],
 ];
@@ -75,7 +78,7 @@ const DEPARTMENT_RULES: Array<[RegExp, FacultyDomain]> = [
 const EXCLUDED_DEPARTMENT_RULES: RegExp[] = [
   /\bphysics\b/i,
   /\b(computer|computing|informatics|information technology|data science|artificial intelligence)\b/i,
-  /\b(electrical|electronics?|communication|instrumentation|control)\b/i,
+  /\b(communication|instrumentation|control)\b/i,
   /\b(mathematic|statistic)/i,
   /\b(humanities|social|economics|management|business|liberal arts|linguistics|philosophy|design school|industrial design|education)\b/i,
   /\b(aerospace|aeronautic|ocean|naval|earth science|geolog|geophysic|atmospher|climate|mining|petroleum|textile|agricultur|food)\b/i,
@@ -123,6 +126,7 @@ const TOPIC_RULES: Array<[RegExp, FacultyDomain]> = [
   [/\b(biochemistry|genetics|molecular\s+biology|immunology|microbiology|biological\s+sciences|agricultural\s+and\s+biological|neuroscience|cell\s+biology|pharmacolog)/i, 'biology'],
   [/\b(materials?\s+(science|chemistry)|metals?\s+and\s+alloys|ceramics|polymers|nanotechnology|surfaces|electronic,?\s+optical)/i, 'materials'],
   [/\b(energy|fuel\s+technology|renewable|electrochemical\s+energy)\b/i, 'energy'],
+  [/\b(electrical\s+and\s+electronic|electronic,?\s+optical\s+and\s+magnetic|signal\s+processing|hardware\s+and\s+architecture)\b/i, 'electrical'],
   [/\b(civil\s+and\s+structural|building\s+and\s+construction|geotechnical|ocean\s+engineering)\b/i, 'civil'],
   [/\b(mechanical\s+engineering|mechanics\s+of\s+materials|industrial\s+and\s+manufacturing|automotive)\b/i, 'mechanical'],
 ];
