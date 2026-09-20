@@ -301,7 +301,7 @@ export function FacultyPage() {
 
   const promote = async () => {
     setActionError(null);
-    let est: { candidates: number; withOpenAlex: number; scanCreditsPerLead: { min: number; max: number } };
+    let est: { candidates: number; byInstrument: number; withOpenAlex: number; scanCreditsPerLead: { min: number; max: number } };
     try {
       est = await api.rosterPromoteEstimate(threshold);
     } catch (e) {
@@ -311,7 +311,7 @@ export function FacultyPage() {
     const scanCost = identifyInstruments ? `\n\nInstrument identification: ${est.scanCreditsPerLead.min}–${est.scanCreditsPerLead.max} credits per lead × ${est.withOpenAlex} leads with an OpenAlex record = ${est.scanCreditsPerLead.min * est.withOpenAlex}–${est.scanCreditsPerLead.max * est.withOpenAlex} credits. Stops cleanly if the allowance runs out.` : '\n\nInstrument identification is off — no credits.';
     void run(
       'Promotion',
-      `Promote ${est.candidates} member${est.candidates === 1 ? '' : 's'} scoring ${threshold} or above into the CRM as pending-review leads?${scanCost}\n\nProceed?`,
+      `Promote ${est.candidates} member${est.candidates === 1 ? '' : 's'} into the CRM as pending-review leads: everyone scoring ${threshold} or above, plus ${est.byInstrument} instrument owner${est.byInstrument === 1 ? '' : 's'} below that score.${scanCost}\n\nProceed?`,
       () => api.rosterPromote({ threshold, identifyInstruments }),
     );
   };

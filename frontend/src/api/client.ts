@@ -301,7 +301,7 @@ export const api = {
   rosterSweep: (payload: { institutionIds: string[]; rescore?: boolean }) =>
     request<{ job: RosterJob }>('/roster/sweep', { method: 'POST', body: JSON.stringify(payload) }),
   rosterPromoteEstimate: (threshold: number) =>
-    request<{ candidates: number; withOpenAlex: number; scanCreditsPerLead: { min: number; max: number } }>(`/roster/promote/estimate?threshold=${threshold}`),
+    request<{ candidates: number; byInstrument: number; withOpenAlex: number; scanCreditsPerLead: { min: number; max: number } }>(`/roster/promote/estimate?threshold=${threshold}`),
   rosterPromote: (payload: { threshold?: number; identifyInstruments?: boolean } = {}) =>
     request<{ job: RosterJob }>('/roster/promote', { method: 'POST', body: JSON.stringify(payload) }),
   rosterFill: (payload: { useScraper?: boolean } = {}) =>

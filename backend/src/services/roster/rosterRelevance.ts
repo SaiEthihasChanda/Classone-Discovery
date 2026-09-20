@@ -190,11 +190,15 @@ export interface RosterPromoteOptions {
   ids?: string[];
   /** Run the per-lead instrument scan (10 credits per brand, more per model) on each promoted lead. */
   identifyInstruments?: boolean;
+  /** Promote anyone with an instrument sighting whatever their score. Default true. */
+  includeInstrumentOwners?: boolean;
   limit?: number;
 }
 
 export interface RosterPromoteSummary {
   promoted: number;
+  /** Of the promoted, those admitted by an instrument sighting rather than the score. */
+  byInstrument: number;
   alreadyInCrm: number;
   belowThreshold: number;
   scanned: number;
@@ -203,11 +207,13 @@ export interface RosterPromoteSummary {
 }
 
 /** What a promotion pass would do, for the confirmation dialog. */
-export async function estimatePromotion(threshold: number): Promise<{ candidates: number; withOpenAlex: number; scanCreditsPerLead: { min: number; max: number } }> {
-  const members = await repositories.faculty.find({ filter: [where.eq('status', 'eligible'), where.gte('relevance.score', threshold)] });
+export async function estimatePromotion(threshold: number): Promise<{ candidates: number; byInstrument: number; withOpenAlex: number; scanCreditsPerLead: { min: number; max: number } }> {
+  const eligible = await repositories.faculty.find({ filter: [where.eq('status', 'eligible')] });
+  const members = eligible.filter((m) => (m.relevance.score ?? -1) >= threshold || m.research.instruments.length > 0);
   const { estimateScanCredits } = await import('../discovery/instrumentScan.js');
   return {
     candidates: members.length,
+    byInstrument: members.filter((m) => (m.relevance.score ?? -1) < threshold).length,
     withOpenAlex: members.filter((m) => m.person.openAlexAuthorId).length,
     scanCreditsPerLead: await estimateScanCredits(),
   };
@@ -273,16 +279,23 @@ export async function promoteRoster(options: RosterPromoteOptions, ctx: JobConte
   if (options.ids?.length) filter.push(where.in('_id', options.ids));
   const members = await repositories.faculty.find({ filter, options: { limit: options.limit ?? 100_000, sort: { 'relevance.score': -1 } } });
 
-  const summary: RosterPromoteSummary = { promoted: 0, alreadyInCrm: 0, belowThreshold: 0, scanned: 0, instrumentsFound: 0, openAlexExhausted: false };
+  const summary: RosterPromoteSummary = { promoted: 0, byInstrument: 0, alreadyInCrm: 0, belowThreshold: 0, scanned: 0, instrumentsFound: 0, openAlexExhausted: false };
   const promotedLeads: Lead[] = [];
+  const includeOwners = options.includeInstrumentOwners ?? true;
 
   for (const [i, member] of members.entries()) {
     ctx.checkpoint();
     if (i % 10 === 0) ctx.setStage(`promoting ${i + 1}/${members.length}`, (i / Math.max(1, members.length)) * (options.identifyInstruments ? 0.3 : 1));
-    if ((member.relevance.score ?? -1) < threshold) {
+    const belowBar = (member.relevance.score ?? -1) < threshold;
+    // Someone who has written a potentiostat into a paper is a lead whatever
+    // the keyword score says — the score can only be low because the works
+    // call did not run.
+    const ownsInstrument = includeOwners && member.research.instruments.length > 0;
+    if (belowBar && !ownsInstrument) {
       summary.belowThreshold += 1;
       continue;
     }
+    if (belowBar) summary.byInstrument += 1;
     const existing = await repositories.leads.findDuplicate({
       email: member.person.email,
       normalizedNameKey: normalizeNameKey(member.person.name),
@@ -299,7 +312,7 @@ export async function promoteRoster(options: RosterPromoteOptions, ctx: JobConte
     summary.promoted += 1;
     ctx.set('promoted', summary.promoted);
   }
-  ctx.log(`${summary.promoted} promoted, ${summary.alreadyInCrm} already in the CRM, ${summary.belowThreshold} below ${threshold}`);
+  ctx.log(`${summary.promoted} promoted (${summary.byInstrument} by instrument sighting below the score bar), ${summary.alreadyInCrm} already in the CRM, ${summary.belowThreshold} below ${threshold}`);
 
   if (options.identifyInstruments) {
     const scannable = promotedLeads.filter((l) => l.source.sourceRecordId && /^A\d{6,}$/.test(l.source.sourceRecordId));

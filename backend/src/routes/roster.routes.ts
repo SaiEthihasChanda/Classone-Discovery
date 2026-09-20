@@ -300,7 +300,7 @@ rosterRouter.get(
 rosterRouter.post(
   '/promote',
   asyncHandler(async (req, res) => {
-    const schema = z.object({ threshold: z.number().min(0).max(100).optional(), ids: z.array(objectId).optional(), identifyInstruments: z.boolean().optional(), limit: z.number().int().min(1).optional() });
+    const schema = z.object({ threshold: z.number().min(0).max(100).optional(), ids: z.array(objectId).optional(), identifyInstruments: z.boolean().optional(), includeInstrumentOwners: z.boolean().optional(), limit: z.number().int().min(1).optional() });
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
     const job = startOrConflict('roster_promote', (ctx) => promoteRoster(parsed.data, ctx));
