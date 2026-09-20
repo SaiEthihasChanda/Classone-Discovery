@@ -959,3 +959,51 @@ export async function getAuthorRecentWorks(params: {
       .slice(0, 3000),
   };
 }
+
+/**
+ * One author's record — output, topics, ORCID, years at a given institute.
+ * A single-record lookup, so free. Used when a paper sighting names someone
+ * the roster does not have yet.
+ */
+export async function getAuthor(authorId: string, institutionId?: string): Promise<InstitutionAuthor | null> {
+  const id = authorId.split('/').pop()!;
+  const url = new URL(`${BASE_URL}/authors/${id}`);
+  url.searchParams.set('select', 'id,display_name,orcid,works_count,summary_stats,affiliations,last_known_institutions,topics');
+  if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
+  interface Record_ {
+    id?: string;
+    display_name?: string;
+    orcid?: string;
+    works_count?: number;
+    summary_stats?: { h_index?: number };
+    affiliations?: Array<{ institution?: { id?: string }; years?: number[] }>;
+    last_known_institutions?: Array<{ id?: string; display_name?: string; lineage?: string[] }>;
+    topics?: Array<{ display_name?: string; count?: number; subfield?: { display_name?: string }; field?: { display_name?: string } }>;
+  }
+  let a: Record_;
+  try {
+    a = await fetchOpenAlex<Record_>(url.toString(), 0);
+  } catch {
+    return null;
+  }
+  if (!a.id || !a.display_name) return null;
+  const short = (v?: string) => (v ?? '').split('/').pop() ?? '';
+  const inst = institutionId ? short(institutionId) : undefined;
+  const years = (a.affiliations ?? []).flatMap((x) => x.years ?? []).filter((y) => typeof y === 'number');
+  return {
+    id: short(a.id),
+    name: a.display_name,
+    orcid: a.orcid?.replace('https://orcid.org/', ''),
+    worksCount: a.works_count ?? 0,
+    hIndex: a.summary_stats?.h_index,
+    yearsHere: inst ? (a.affiliations ?? []).filter((x) => short(x.institution?.id) === inst).flatMap((x) => x.years ?? []).sort((x, y) => y - x) : [],
+    firstPublicationYear: years.length ? Math.min(...years) : undefined,
+    lastPublicationYear: years.length ? Math.max(...years) : undefined,
+    topics: (a.topics ?? [])
+      .filter((t) => t.display_name)
+      .map((t) => ({ name: t.display_name!, count: t.count ?? 0, subfield: t.subfield?.display_name, field: t.field?.display_name })),
+    lastKnown: (a.last_known_institutions ?? [])
+      .filter((i) => i.id && i.display_name)
+      .map((i) => ({ id: short(i.id), name: i.display_name!, lineage: (i.lineage ?? []).map(short) })),
+  };
+}

@@ -24,6 +24,7 @@ import type { DiscoveredCandidate } from '../discovery/types.js';
 import type { JobContext } from '../jobs/jobRunner.js';
 import { getSettings } from '../settings/settingsService.js';
 import { NameIndex } from './names.js';
+import { admitInstrumentOwner } from './rosterBuilder.js';
 import { scoreRoster } from './rosterRelevance.js';
 
 export interface SweepOptions {
@@ -34,6 +35,7 @@ export interface SweepOptions {
 
 export interface SweepDeps {
   fetchBrands?: typeof fetchFromOpenAlex;
+  admit?: typeof admitInstrumentOwner;
 }
 
 export interface SweepSummary {
@@ -43,6 +45,10 @@ export interface SweepSummary {
     authorsSeen: number;
     membersTagged: number;
     notOnRoster: number;
+    /** People the sources missed, admitted on the strength of a sighting. */
+    admitted: number;
+    /** Sighted authors declined (students, postdocs, movers) — name and why. */
+    declined: Array<{ name: string; reason: string; brands: string[] }>;
     byBrand: Record<string, number>;
     errors: string[];
     budgetExhausted: boolean;
@@ -75,7 +81,7 @@ export async function sweepInstruments(options: SweepOptions, ctx: JobContext, d
     ctx.checkpoint();
     const institution = INDIAN_INSTITUTIONS.find((x) => x.openAlexId === id);
     if (!institution) continue;
-    const r: SweepSummary['institutions'][number] = { id, name: institution.name, authorsSeen: 0, membersTagged: 0, notOnRoster: 0, byBrand: {}, errors: [], budgetExhausted: false };
+    const r: SweepSummary['institutions'][number] = { id, name: institution.name, authorsSeen: 0, membersTagged: 0, notOnRoster: 0, admitted: 0, declined: [], byBrand: {}, errors: [], budgetExhausted: false };
     summary.institutions.push(r);
     ctx.setStage(`${institution.name}: brand and model queries`, i / options.institutionIds.length);
 
@@ -102,12 +108,18 @@ export async function sweepInstruments(options: SweepOptions, ctx: JobContext, d
     // Gather every sighting per member first, then write once.
     const sightings = new Map<string, DiscoveredCandidate['instruments']>();
     const seenAuthors = new Set<string>();
+    const unknownAuthors = new Map<string, { name: string; instruments: NonNullable<DiscoveredCandidate['instruments']> }>();
     for (const c of result.candidates) {
       const aid = authorIdOf(c);
       if (aid) seenAuthors.add(aid);
       const member = (aid && byAuthor.get(aid)) || byName.find(c.name);
       if (!member) {
         r.notOnRoster += 1;
+        if (aid) {
+          const u = unknownAuthors.get(aid) ?? { name: c.name, instruments: [] };
+          u.instruments.push(...(c.instruments ?? []));
+          unknownAuthors.set(aid, u);
+        }
         continue;
       }
       const list = sightings.get(member.id) ?? [];
@@ -115,6 +127,32 @@ export async function sweepInstruments(options: SweepOptions, ctx: JobContext, d
       sightings.set(member.id, list);
     }
     r.authorsSeen = seenAuthors.size;
+
+    // Authors the roster does not have: a paper naming the instrument admits
+    // them if they are faculty (see `admitInstrumentOwner`); students on the
+    // same paper are listed, not added. Free lookups only.
+    const admit = deps.admit ?? admitInstrumentOwner;
+    for (const [aid, u] of unknownAuthors) {
+      ctx.checkpoint();
+      const brandsSeen = [...new Set(u.instruments.map((x) => (x.model ? `${x.brand} ${x.model}` : x.brand)))];
+      try {
+        const res = await admit({ authorId: aid, institution: { openAlexId: id, name: institution.name }, instruments: u.instruments });
+        if (res.admitted && res.member) {
+          r.admitted += 1;
+          changedIds.add(res.member.id);
+          if (u.instruments.some((x) => x.vendor === 'classone') && !summary.classOneOwners.includes(res.member.person.name)) summary.classOneOwners.push(res.member.person.name);
+          ctx.log(`ADMITTED ${res.member.person.name} (${res.member.role.category}, ${res.member.department.name ?? res.member.department.domain}) — ${brandsSeen.join(', ')}`);
+        } else {
+          r.declined.push({ name: res.name ?? u.name, reason: res.reason ?? 'declined', brands: brandsSeen });
+        }
+      } catch (error) {
+        r.declined.push({ name: u.name, reason: error instanceof Error ? error.message : String(error), brands: brandsSeen });
+      }
+    }
+    if (r.declined.length > 0) {
+      const classOne = r.declined.filter((x) => x.brands.some((b) => /palmsens|corrtest|emstat|sensit/i.test(b)));
+      if (classOne.length > 0) ctx.log(`Class One brand sightings not admitted (students/postdocs/movers): ${classOne.map((x) => `${x.name} [${x.reason}]`).join('; ')}`, 'warn');
+    }
 
     for (const [memberId, found] of sightings) {
       const member = members.find((m) => m.id === memberId)!;
@@ -138,7 +176,7 @@ export async function sweepInstruments(options: SweepOptions, ctx: JobContext, d
     }
     summary.membersTagged += r.membersTagged;
     ctx.count('membersTagged', r.membersTagged);
-    ctx.log(`${institution.name}: ${result.candidates.length} sightings across ${r.authorsSeen} authors; ${r.membersTagged} roster members tagged, ${r.notOnRoster} sightings were people not on the roster`);
+    ctx.log(`${institution.name}: ${result.candidates.length} sightings across ${r.authorsSeen} authors; ${r.membersTagged} roster members tagged, ${r.admitted} instrument owners admitted to the roster, ${r.declined.length} sighted people declined`);
     if (r.budgetExhausted) {
       ctx.log('OpenAlex allowance exhausted — the sweep is incomplete; rerun tomorrow', 'error');
       break;

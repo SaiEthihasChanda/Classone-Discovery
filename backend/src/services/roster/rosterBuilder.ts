@@ -27,6 +27,7 @@
 import { randomUUID } from 'node:crypto';
 import { INDIAN_INSTITUTIONS } from '../../data/indianInstitutions.js';
 import {
+  getAuthor,
   getInstitutionProfile,
   listInstitutionAuthors,
   type InstitutionAuthor,
@@ -54,11 +55,13 @@ import type {
   FacultyMemberCreateInput,
   FacultySource,
   LeadAffiliation,
+  LeadInstrument,
 } from '../../types/domain.js';
 import { normalizeInstitutionKey, normalizeNameKey } from '../../utils/normalize.js';
 import type { JobContext } from '../jobs/jobRunner.js';
 import { instKey } from '../leads/affiliationService.js';
 import { getSettings, updateSettings } from '../settings/settingsService.js';
+import { mergeInstruments } from '../discovery/instrumentDetector.js';
 import { decideDomain, DOMAIN_LABELS, type DomainDecision } from './domains.js';
 import { NameIndex } from './names.js';
 import { classifyRole, inferSeniority, isFacultyRole, strongerRole, type RoleDecision } from './roles.js';
@@ -1009,6 +1012,7 @@ async function upsertMember(
       tags: [
         ...(role.category === 'inferred' ? ['role-inferred'] : []),
         ...(domain.gate === 'electrochemistry' ? ['electrochem-gate'] : []),
+        ...(domain.gate === 'instrument' ? ['instrument-owner'] : []),
       ],
     };
     await repositories.faculty.create(toCreate);
@@ -1063,4 +1067,77 @@ async function upsertMember(
     tags: [...tags],
   }, { unset: existing.status === 'excluded' ? ['exclusionReason'] : [] });
   return 'updated';
+}
+
+/**
+ * A person a paper sighting names as an instrument user, whom no source put
+ * on the roster — typically a faculty member outside the kept departments
+ * (an electrical engineer with a PalmSens; see Tallur, IIT Bombay). Having
+ * written the instrument into a paper is the strongest evidence of relevance
+ * there is, so the department gate does not apply; being faculty still does:
+ * an ORCID title, or the seniority test. Students on the same paper are
+ * declined, and the reason is returned so the sweep can list them.
+ */
+export async function admitInstrumentOwner(params: {
+  authorId: string;
+  institution: { openAlexId: string; name: string };
+  instruments: LeadInstrument[];
+  deps?: { author?: typeof getAuthor; orcidEmployments?: typeof getOrcidEmployments; includeInferred?: boolean };
+}): Promise<{ admitted: boolean; member?: FacultyMember; name?: string; reason?: string }> {
+  const author = await (params.deps?.author ?? getAuthor)(params.authorId, params.institution.openAlexId);
+  if (!author) return { admitted: false, reason: 'no author record' };
+  const d = newDraft(author.name);
+  d.openAlexAuthorId = author.id;
+  d.topics = author.topics;
+  d.stats = {
+    worksCount: author.worksCount,
+    hIndex: author.hIndex,
+    firstPublicationYear: author.firstPublicationYear,
+    lastPublicationYear: author.lastPublicationYear,
+    yearsAtInstitute: author.yearsHere,
+  };
+  addSource(d, { type: 'openalex', recordId: author.id, url: `https://openalex.org/${author.id}`, seenAt: new Date() });
+
+  // Not at the institute any more (last known elsewhere, and not recently here)?
+  const here = author.lastKnown.some((i) => i.id === params.institution.openAlexId || i.lineage?.includes(params.institution.openAlexId));
+  const recentHere = author.yearsHere.some((y) => y >= new Date().getFullYear() - 2);
+  if (!here && !recentHere) return { admitted: false, name: author.name, reason: 'not at the institute now' };
+
+  if (author.orcid) {
+    d.orcid = author.orcid;
+    const record = await (params.deps?.orcidEmployments ?? getOrcidEmployments)(author.orcid).catch(() => null);
+    const keys = new Set([instKey(params.institution.name)!]);
+    const emp = record ? currentEmploymentHere(record.employments, { keys }) : undefined;
+    if (emp) {
+      d.orcidCurrentHere = emp;
+      d.roles.push({ ...classifyRole(emp.role), source: 'orcid' });
+      if (emp.role) d.title = emp.role;
+      if (emp.department) d.department = emp.department;
+      addSource(d, { type: 'orcid', recordId: author.orcid, url: `https://orcid.org/${author.orcid}`, title: emp.role, department: emp.department, seenAt: new Date() });
+    }
+  }
+
+  let role: RoleDecision = { category: 'unknown' };
+  for (const c of d.roles) role = strongerRole(role, c);
+  let basis: string | undefined;
+  if (role.category === 'unknown' || role.category === 'excluded') {
+    const inferred = inferSeniority({ ...d.stats, name: d.name });
+    basis = inferred.basis;
+    if (role.category === 'excluded') return { admitted: false, name: author.name, reason: `role: ${d.title ?? role.matched}` };
+    if (!inferred.senior || params.deps?.includeInferred === false) return { admitted: false, name: author.name, reason: `not established (${inferred.basis})` };
+    role = { category: 'inferred', matched: 'publication record', source: 'inferred' };
+  }
+
+  const base = decideDomain({ department: d.department, topics: d.topics, text: d.topics.map((t) => t.name).join(' ') });
+  const domain: DomainDecision = { domain: base.domain, kept: true, gate: 'instrument', gateTerms: [...new Set(params.instruments.map((i) => i.brand))] };
+  const outcome = await upsertMember(d, params.institution, role, domain, basis);
+  const member = await repositories.faculty.findSamePerson({ orcid: d.orcid, openAlexAuthorId: d.openAlexAuthorId, normalizedNameKey: normalizeNameKey(d.name), institutionOpenAlexId: params.institution.openAlexId });
+  if (member) {
+    const merged = mergeInstruments(member.research.instruments, params.instruments);
+    await repositories.faculty.updateById(member.id, {
+      research: { instruments: merged },
+      tags: [...new Set([...member.tags, 'instrument-owner', ...(base.kept ? [] : ['outside-departments'])])],
+    });
+  }
+  return { admitted: true, member: member ?? undefined, name: author.name, reason: outcome };
 }

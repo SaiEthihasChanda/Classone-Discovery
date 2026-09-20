@@ -362,14 +362,53 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
       }),
     });
     assert.equal(result.membersTagged, 1);
-    assert.deepEqual(result.classOneOwners, ['Rahul Verma']);
     assert.equal(result.institutions[0]!.notOnRoster, 1, 'a student on the paper is not on the roster');
+    assert.equal(result.institutions[0]!.admitted, 0, 'the student is not admitted');
+    assert.equal(result.institutions[0]!.declined[0]!.name, 'Some Student');
     const after = await repositories.faculty.findSamePerson({ openAlexAuthorId: 'A5000000002', normalizedNameKey: '' });
     assert.equal(after!.research.instruments[0]!.model, 'PalmSens4');
     assert.ok(after!.tags.includes('instruments-swept'));
     assert.ok((after!.relevance.score ?? 0) > before, `re-scored ${before} → ${after!.relevance.score}`);
     // Put him back below the bar so the promotion test below still promotes exactly one.
     await repositories.faculty.updateById(after!.id, { relevance: { score: 10 }, research: { instruments: [] } });
+  });
+
+  await check('a sighted instrument owner outside the kept departments is ADMITTED when they read as faculty', async () => {
+    const { sweepInstruments } = await import('../services/roster/rosterSweep.js');
+    const result = await sweepInstruments({ institutionIds: [IITB_ID] }, noopCtx(), {
+      fetchBrands: async () => ({
+        source: 'openalex',
+        errors: [],
+        candidates: [
+          {
+            sourceType: 'openalex', sourceRecordId: 'https://openalex.org/A5000000777', name: 'Ultra Sonic', institutionName: 'Indian Institute of Technology Bombay',
+            publications: [{ title: 'Acoustic sensing with a handheld potentiostat', year: 2025 }], grants: [], topics: [], evidenceText: '',
+            instruments: [{ brandKey: 'palmsens', brand: 'PalmSens', vendor: 'classone', model: 'PalmSens4', evidence: 'Full text mentions the PalmSens4.', matchedVia: 'fulltext_search' }],
+          },
+        ],
+      }),
+      admit: async (p) =>
+        (await import('../services/roster/rosterBuilder.js')).admitInstrumentOwner({
+          ...p,
+          deps: {
+            // An electrical engineer: MEMS topics, EE department on ORCID, ten years at the institute.
+            author: async () => ({ id: 'A5000000777', name: 'Ultra Sonic', orcid: '0000-0002-0007-0007', worksCount: 140, hIndex: 21, yearsHere: [2026, 2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017], firstPublicationYear: 2009, lastPublicationYear: 2026, topics: [{ name: 'Ultrasonics and Acoustic Wave Propagation', count: 28, subfield: 'Mechanics of Materials', field: 'Engineering' }], lastKnown: [{ id: IITB_ID, name: 'IIT Bombay' }] }),
+            orcidEmployments: async () => ({ orcid: '0000-0002-0007-0007', employments: [{ organization: 'Indian Institute of Technology Bombay', department: 'Electrical Engineering', role: 'Associate Professor', startYear: 2016, current: true }] }),
+          },
+        }),
+    });
+    assert.equal(result.institutions[0]!.admitted, 1);
+    assert.ok(result.classOneOwners.includes('Ultra Sonic'));
+    const m = (await repositories.faculty.find({})).find((x) => x.person.name === 'Ultra Sonic');
+    assert.ok(m, 'admitted to the roster');
+    assert.equal(m.role.category, 'professor');
+    assert.equal(m.department.name, 'Electrical Engineering');
+    assert.equal(m.department.domain, 'other');
+    assert.ok(m.tags.includes('instrument-owner') && m.tags.includes('outside-departments'), `tags: ${m.tags}`);
+    assert.equal(m.research.instruments[0]!.model, 'PalmSens4');
+    assert.equal(m.institution.affiliation?.source, 'orcid');
+    assert.ok((m.relevance.score ?? 0) >= 40, `scored ${m.relevance.score} — a PalmSens owner must clear the bar`);
+    await repositories.faculty.deleteById(m.id);
   });
 
   await check('promoteRoster creates CRM leads above the threshold, linked back to the member', async () => {
