@@ -98,6 +98,7 @@ def main() -> int:
     p.add_argument("--wipe", action="store_true", help="wipe roster and CRM first")
     p.add_argument("--log", default="")
     p.add_argument("--vidwan-deadline-hours", type=float, default=36)
+    p.add_argument("--skip-phase-a", action="store_true", help="roster already built/verified/scored; go straight to waiting for the reset")
     a = p.parse_args()
     global LOG
     LOG = a.log
@@ -107,19 +108,22 @@ def main() -> int:
     log(f"orchestrator start; institutes={a.institutions} reset_at={reset_at.isoformat()} threshold={a.threshold}")
 
     # --- Phase A ----------------------------------------------------------------
-    if a.wipe:
+    vidwan_done = False  # even with phase A skipped, a Vidwan pass runs when the site answers
+    if a.skip_phase_a:
+        log("phase A skipped on request")
+    if a.wipe and not a.skip_phase_a:
         log("wiping roster and CRM")
         log(f"  roster: {call('DELETE', '/roster', {'confirm': 'WIPE ROSTER'})}")
         log(f"  crm: {call('POST', '/admin/wipe-crm', {'confirm': 'WIPE'})}")
-    vidwan_done = False
-    if vidwan_up():
-        run("A build (all sources)", "/roster/build", {"institutionIds": a.institutions, "sources": ["openalex", "orcid", "faculty_pages", "vidwan"], "includeInferredRoles": True})
-        vidwan_done = True
-    else:
-        log("Vidwan unreachable; building without it and retrying it later")
-        run("A build (openalex, orcid, pages)", "/roster/build", {"institutionIds": a.institutions, "sources": ["openalex", "orcid", "faculty_pages"], "includeInferredRoles": True})
-    run("A verify", "/roster/verify", {"freshDays": 0})
-    run("A score (cached where possible)", "/roster/score", {})
+    if not a.skip_phase_a:
+        if vidwan_up():
+            run("A build (all sources)", "/roster/build", {"institutionIds": a.institutions, "sources": ["openalex", "orcid", "faculty_pages", "vidwan"], "includeInferredRoles": True})
+            vidwan_done = True
+        else:
+            log("Vidwan unreachable; building without it and retrying it later")
+            run("A build (openalex, orcid, pages)", "/roster/build", {"institutionIds": a.institutions, "sources": ["openalex", "orcid", "faculty_pages"], "includeInferredRoles": True})
+        run("A verify", "/roster/verify", {"freshDays": 0})
+        run("A score (cached where possible)", "/roster/score", {})
 
     # --- Phases B and C --------------------------------------------------------
     phase_c_done = False
@@ -133,8 +137,21 @@ def main() -> int:
                 run("B score new members", "/roster/score", {})
             vidwan_done = True
         if not phase_c_done and now >= reset_at:
-            log("OpenAlex allowance should have reset")
-            run("C re-score all", "/roster/score", {"rescore": True})
+            # OpenAlex's window rolls from first use; the header's reset time
+            # has been off by hours. Re-score first — it is the cheapest step —
+            # and if it reports the allowance still exhausted, wait and retry
+            # instead of burning the sweep's calls into a wall.
+            attempts = 0
+            while True:
+                res = run("C re-score all", "/roster/score", {"rescore": True}).get("result") or {}
+                if not res.get("openAlexExhausted"):
+                    break
+                attempts += 1
+                if attempts >= 16:
+                    log("allowance still exhausted after 8 hours of retries; continuing anyway", )
+                    break
+                log("allowance not back yet; retrying in 30 min")
+                time.sleep(1800)
             run("C instrument sweep", "/roster/sweep", {"institutionIds": a.institutions})
             run("C promote", "/roster/promote", {"threshold": a.threshold, "identifyInstruments": False, "includeInstrumentOwners": True})
             run("C fill missing info", "/roster/fill", {"useScraper": True})
