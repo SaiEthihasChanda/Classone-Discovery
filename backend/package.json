@@ -11,19 +11,29 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "seed:catalog": "tsx src/scripts/seedCatalog.ts",
+    "review:apply": "tsx src/scripts/applyReviewRules.ts",
+    "funding:refresh": "tsx src/scripts/refreshFunding.ts",
+    "roster:sync-leads": "tsx src/scripts/syncRosterToLeads.ts",
+    "roster:tag-areas": "tsx src/scripts/tagApplicationAreas.ts",
     "catalog:export": "node src/scripts/exportWebsiteCatalog.mjs",
     "smoke": "tsx src/scripts/smokeTest.ts",
     "smoke:live": "tsx src/scripts/liveSmokeTest.ts",
     "test:enrichment": "tsx src/scripts/testEnrichment.ts",
-    "probe:sources": "tsx src/scripts/probeSources.ts"
+    "probe:sources": "tsx src/scripts/probeSources.ts",
+    "db:export": "tsx src/scripts/dbExport.ts",
+    "db:import": "tsx src/scripts/dbImport.ts",
+    "gmail:auth": "tsx src/scripts/gmailAuth.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
+    "firebase-admin": "^14.5.1",
+    "googleapis": "^190.0.0",
     "mongoose": "^8.9.5",
     "node-cron": "^4.6.0",
+    "nodemailer": "^10.6.1",
     "openai": "^7.4.0",
     "undici": "^8.10.2",
     "zod": "^3.24.1"
@@ -33,6 +43,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.7",
     "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^8.0.2",
     "mongodb-memory-server": "^11.2.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"

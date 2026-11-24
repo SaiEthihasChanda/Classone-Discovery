@@ -8,6 +8,7 @@ import cron, { type ScheduledTask } from 'node-cron';
 import { env } from '../config/env.js';
 import { logActivity } from '../services/activity/activityService.js';
 import { runDiscovery } from '../services/discovery/discoveryOrchestrator.js';
+import { runFollowUpCheck } from '../services/email/followUpScheduler.js';
 
 const tasks: ScheduledTask[] = [];
 
@@ -58,7 +59,12 @@ export function startScheduler(): void {
   tasks.push(cron.schedule(env.CRON_DISCOVERY_SCHEDULE, () => void weeklyDiscoveryJob()));
   console.log(`[cron] discovery scheduled: ${env.CRON_DISCOVERY_SCHEDULE}`);
 
-  // The follow-up check job is registered here in Phase 3.
+  if (!cron.validate(env.CRON_FOLLOWUP_CHECK_SCHEDULE)) {
+    console.error(`[cron] invalid CRON_FOLLOWUP_CHECK_SCHEDULE "${env.CRON_FOLLOWUP_CHECK_SCHEDULE}" — follow-up check not started`);
+    return;
+  }
+  tasks.push(cron.schedule(env.CRON_FOLLOWUP_CHECK_SCHEDULE, () => void runFollowUpCheck()));
+  console.log(`[cron] follow-up check scheduled: ${env.CRON_FOLLOWUP_CHECK_SCHEDULE}`);
 }
 
 export function stopScheduler(): void {

@@ -1,6 +1,7 @@
 # Secrets — never commit
 .env
-.env.local
+.env.*
+!.env.example
 *.pem
 *.key
 credentials.json
@@ -32,6 +33,9 @@ Thumbs.db
 
 # Local scratch
 tmp/
+# Workbooks with researchers' contact details, and database dumps
+exports/
+*.ndjson.gz
 .cache/
 
 # Local MongoDB data directory (npm run dev)
@@ -48,3 +52,11 @@ scraper-service/.playwright/
 
 # Service-account keys (belong to the website repo, never here)
 serviceAccountKey.json
+
+# Server deploy archive (deploy/pack.ps1)
+classone-app.tar.gz
+
+# Local run logs, Office lock files, TypeScript build cache
+logs/
+~$*
+*.tsbuildinfo

@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # site refuses the identified agent, set VIDWAN_USER_AGENT in .env — that
     # is the owner's call to make, not the code's default.
     vidwan_user_agent: str = ""
+    # Off switch for all Vidwan traffic (VIDWAN_ENABLED in .env, shared with the
+    # backend). When false the Vidwan endpoints refuse with 503 and send nothing.
+    vidwan_enabled: bool = True
     # Vidwan pacing, decided by the owner on 20 Sep 2026: a few parallel
     # connections and a short gap between request starts. Everything else in
     # this service stays at one request per 1.5 s per domain. A 403/429 still

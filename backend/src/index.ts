@@ -9,6 +9,8 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './db/connection.js';
 import { startScheduler, stopScheduler } from './jobs/scheduler.js';
+import { startFlowEngine, stopFlowEngine } from './services/pipeline/flowEngine.js';
+import { startScheduleTicker, stopScheduleTicker } from './services/pipeline/pipelineRuns.js';
 import { getAiProvider } from './services/ai/enrichmentService.js';
 
 async function main(): Promise<void> {
@@ -25,10 +27,17 @@ async function main(): Promise<void> {
   });
 
   startScheduler();
+  // The Prospects conveyor and its scheduled runs. Off with FLOW_ENGINE=off (e.g. a second instance).
+  if (process.env.FLOW_ENGINE !== 'off') {
+    await startFlowEngine();
+    startScheduleTicker();
+  }
 
   const shutdown = async (signal: string) => {
     console.log(`\n[api] ${signal} received, shutting down`);
     stopScheduler();
+    stopFlowEngine();
+    stopScheduleTicker();
     server.close();
     await disconnectDatabase();
     process.exit(0);

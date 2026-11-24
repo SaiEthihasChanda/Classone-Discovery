@@ -50,10 +50,20 @@ export function normalizeInstitutionKey(name?: string): string | undefined {
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(INSTITUTION_NOISE, ' ')
+    // Place spellings that differ between sources ("Bhubaneshwar" on Vidwan, "Bhubaneswar" on OpenAlex).
+    .replace(/\bbhubaneshwar\b/g, 'bhubaneswar')
     .replace(/\s+/g, ' ')
     .trim();
 
   return cleaned || undefined;
+}
+
+/**
+ * Whether one institution key contains the other as whole words. Plain substring containment is
+ * wrong for keys: "indian technology bhu" (IIT BHU) is a substring of "indian technology bhubaneswar".
+ */
+export function keyContains(outer: string, inner: string): boolean {
+  return ` ${outer} `.includes(` ${inner} `);
 }
 
 /**

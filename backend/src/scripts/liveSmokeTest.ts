@@ -24,6 +24,7 @@ async function main(): Promise<void> {
   process.env.MONGO_DB_NAME = 'live_smoke';
   process.env.DB_PROVIDER = 'mongo';
   process.env.NODE_ENV = 'test';
+  process.env.AUTH_ENABLED = 'false';
 
   const { connectDatabase, disconnectDatabase } = await import('../db/connection.js');
   const { repositories } = await import('../repositories/index.js');

@@ -347,6 +347,119 @@ def _extract_name(block: Tag) -> str | None:
     return None
 
 
+def _extract_department(block: Tag) -> str | None:
+    """A department named by the markup itself (`class="department"`, as on IIT Jammu's cards)."""
+    element = block.find(class_=re.compile(r"\b(department|dept)\b", re.I))
+    if not isinstance(element, Tag):
+        return None
+    text = " ".join(element.get_text(" ", strip=True).split())
+    return text if 2 <= len(text) <= 120 else None
+
+
+def _institute_domain(source_url: str) -> str:
+    host = urlparse(source_url).netloc.lower().split(":")[0]
+    return host[4:] if host.startswith("www.") else host
+
+
+USERNAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{1,39}")
+_TABLE_NAME_WORD = re.compile(rf"(?:{_NAME_CHAR}+\.?|[A-Z]\.)+")
+
+
+def _table_name(cell: str) -> str | None:
+    """A Name-column cell as a person's name, or None.
+
+    The column header already says these are names, so the card parser's strict
+    two-word shape is relaxed: Indian names are often three or four words, a
+    single given name, an initial ("C. S. Yadav"), a lowercase surname, or carry
+    a role in brackets ("Subrata Ghosh(Chairperson)").
+    """
+    cleaned = " ".join(re.sub(r"\(.*?\)", " ", cell).split()).strip(" ,")
+    words = cleaned.split(" ")
+    if not (2 <= len(cleaned) <= 60 and 1 <= len(words) <= 6) or any(c.isdigit() for c in cleaned):
+        return None
+    # Whole words only: the card check's substring test rejects "Masakapalli" for "all".
+    if any(w.lower().strip('.') in NAME_STOPWORDS for w in words) or not all(_TABLE_NAME_WORD.fullmatch(w) for w in words):
+        return None
+    return " ".join(w[:1].upper() + w[1:] for w in words)
+SECTION_RE = re.compile(r"\b(school|department|centre|center|division|discipline)\b", re.I)
+
+
+def _table_email(cell_text: str, name: str, domain: str) -> str | None:
+    """An Email column cell: a full address, or bare usernames on the institute's domain.
+
+    IIT Mandi lists "varun" for varun@iitmandi.ac.in, and sometimes a role
+    account first ("chairscee,satyajit"); the one closest to the name is kept.
+    """
+    found = EMAIL_RE.findall(cell_text)
+    if found:
+        return pick_personal_email([a.lower() for a in found], name) or found[0].lower()
+    tokens = [t.strip().lower() for t in re.split(r"[,;/\s]+", cell_text) if t.strip()]
+    addresses = [f"{t}@{domain}" for t in tokens if USERNAME_RE.fullmatch(t)]
+    if not addresses:
+        return None
+    return pick_personal_email(addresses, name) or addresses[-1]
+
+
+def _table_section(table: Tag) -> str | None:
+    """The school or department heading just above a table, if there is one."""
+    for text in table.find_all_previous(string=True, limit=8):
+        cleaned = " ".join(str(text).split())
+        if not cleaned or text.find_parent("table") is not None:
+            continue
+        return cleaned if len(cleaned) <= 120 and SECTION_RE.search(cleaned) else None
+    return None
+
+
+def _parse_tables(soup: BeautifulSoup, source_url: str) -> list[ExtractedPerson]:
+    """People from directory tables: a header row naming the columns (Name, Designation, Email, ...).
+
+    Plain `<tr>` rows carry no CSS class, so the repeated-block search never sees
+    them (IIT Mandi's all-faculty page: one such table per school).
+    """
+    domain = _institute_domain(source_url)
+    people: list[ExtractedPerson] = []
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if len(rows) < 4:
+            continue
+        header = [" ".join(c.get_text(" ", strip=True).split()).lower() for c in rows[0].find_all(["th", "td"])]
+
+        def column(*words: str) -> int | None:
+            return next((i for i, h in enumerate(header) if any(w in h for w in words)), None)
+
+        name_col = column("name")
+        if name_col is None:
+            continue
+        title_col = column("designation", "title", "position", "rank")
+        email_col = column("email", "e-mail", "mail")
+        dept_col = column("department", "school", "centre", "discipline")
+        section = _table_section(table)
+
+        for row in rows[1:]:
+            cells = row.find_all(["td", "th"])
+            if len(cells) <= name_col:
+                continue
+            text = lambda i: " ".join(cells[i].get_text(" ", strip=True).split()) if i is not None and i < len(cells) else ""
+            name = _table_name(text(name_col))
+            if not name:
+                continue
+            title = text(title_col) or None
+            email = (_extract_email(cells[email_col]) if email_col is not None and email_col < len(cells) and "@" in str(cells[email_col]) else None) \
+                or (_table_email(text(email_col), name, domain) if email_col is not None and text(email_col) else None)
+            if not (title or email):
+                continue
+            people.append(
+                ExtractedPerson(
+                    name=name,
+                    title=title,
+                    department=text(dept_col) or section,
+                    email=email,
+                    profile_url=_extract_profile_url(row, source_url),
+                )
+            )
+    return people
+
+
 def parse_faculty_page(html: str, source_url: str) -> list[ExtractedPerson]:
     """Extracts people from a faculty directory page."""
     soup = BeautifulSoup(html, "lxml")
@@ -387,11 +500,17 @@ def parse_faculty_page(html: str, source_url: str) -> list[ExtractedPerson]:
             ExtractedPerson(
                 name=name,
                 title=title,
+                department=_extract_department(block),
                 email=email,
                 profile_url=profile_url,
                 bio=bio[:600] if len(bio) > 40 else None,
             )
         )
+
+    for person in _parse_tables(soup, source_url):
+        if person.name.lower() not in seen_names:
+            seen_names.add(person.name.lower())
+            people.append(person)
 
     return people
 

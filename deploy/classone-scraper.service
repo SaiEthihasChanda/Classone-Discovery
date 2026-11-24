@@ -1,0 +1,16 @@
+[Unit]
+Description=Classone-Discovery scraper (Python, Playwright)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=classone
+WorkingDirectory=/opt/classone/app/scraper-service
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/classone/ms-playwright
+ExecStart=/opt/classone/app/scraper-service/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+MemoryMax=1500M
+
+[Install]
+WantedBy=multi-user.target

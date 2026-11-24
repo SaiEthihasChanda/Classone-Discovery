@@ -5,10 +5,11 @@
   "description": "AI Sales Automation Platform for Class One Systems",
   "scripts": {
     "install:all": "npm --prefix backend install && npm --prefix frontend install",
-    "dev": "concurrently -n db,backend,frontend -c green,blue,magenta \"npm --prefix backend run dev:db\" \"wait-on tcp:127.0.0.1:27017 && npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "dev": "concurrently -n db,backend,frontend,scraper -c green,blue,magenta,yellow \"npm --prefix backend run dev:db\" \"wait-on tcp:127.0.0.1:27017 && npm --prefix backend run dev\" \"npm --prefix frontend run dev\" \"node scripts/dev-scraper.mjs\"",
     "dev:db": "npm --prefix backend run dev:db",
     "dev:backend": "npm --prefix backend run dev",
     "dev:frontend": "npm --prefix frontend run dev",
+    "dev:scraper": "node scripts/dev-scraper.mjs",
     "db:reset": "npm --prefix backend run db:reset",
     "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
     "smoke": "npm --prefix backend run smoke",

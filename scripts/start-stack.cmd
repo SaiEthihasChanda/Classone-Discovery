@@ -1,8 +1,8 @@
 @echo off
 REM Starts the whole local stack detached from whichever terminal invoked it:
 REM   1. Mongo + backend + frontend   (npm run dev at the repo root)
-REM   2. the Python scraper service   (uvicorn on 127.0.0.1:8000)
-REM   3. the roster orchestrator      (only when RESET_AT is set)
+REM      (which also starts the Python scraper service on 127.0.0.1:8000)
+REM   2. the roster orchestrator      (only when RESET_AT is set)
 REM
 REM Meant to be run by Task Scheduler (see start-stack-task.cmd) so the
 REM processes survive the closing of the terminal or agent session that
@@ -25,13 +25,8 @@ if errorlevel 1 (
 )
 
 REM --- 2. scraper --------------------------------------------------------------
-curl -s -o nul -m 2 http://127.0.0.1:8000/health
-if errorlevel 1 (
-  echo [stack] starting scraper
-  start "ClassOne scraper" /min cmd /c "cd /d "%ROOT%\scraper-service" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > "%TEMP%\scraper_out.log" 2>&1"
-) else (
-  echo [stack] scraper already up
-)
+REM npm run dev now starts and supervises the scraper itself (scripts\dev-scraper.mjs),
+REM reusing one that is already up, so it is no longer launched separately here.
 
 REM --- 3. orchestrator (optional) ------------------------------------------------
 if "%RESET_AT%"=="" goto :done

@@ -25,6 +25,7 @@
  * Everything external is injectable, so the merge logic is tested offline.
  */
 import { randomUUID } from 'node:crypto';
+import { env } from '../../config/env.js';
 import { INDIAN_INSTITUTIONS } from '../../data/indianInstitutions.js';
 import {
   getAuthor,
@@ -57,16 +58,57 @@ import type {
   LeadAffiliation,
   LeadInstrument,
 } from '../../types/domain.js';
-import { normalizeInstitutionKey, normalizeNameKey } from '../../utils/normalize.js';
+import { keyContains, normalizeInstitutionKey, normalizeNameKey } from '../../utils/normalize.js';
 import type { JobContext } from '../jobs/jobRunner.js';
 import { instKey } from '../leads/affiliationService.js';
 import { getSettings, updateSettings, type AlwaysKeepEntry } from '../settings/settingsService.js';
 import { mergeInstruments } from '../discovery/instrumentDetector.js';
 import { decideDomain, DOMAIN_LABELS, type DomainDecision } from './domains.js';
+import { tagApplicationAreas } from './applicationAreas.js';
 import { NameIndex } from './names.js';
 import { classifyRole, inferSeniority, isFacultyRole, strongerRole, type RoleDecision } from './roles.js';
+import { flowForExistingMember, flowForNewMember } from '../pipeline/flowEngine.js';
 
 export type RosterSource = 'orcid' | 'openalex' | 'faculty_pages' | 'vidwan';
+
+/**
+ * Vidwan enforces its own per-IP request budget — confirmed live via its
+ * `X-Ratelimit-Limit`/`X-Ratelimit-Remaining` response headers (75, decrementing
+ * one per request) — and, once that is run down for a while, drops the
+ * connection outright rather than answering with a clean 429. A fixed public
+ * IP that keeps crawling will eventually hit this; a new IP has a clean budget,
+ * which is why a network change appears to "fix" it.
+ *
+ * Two courtesies, neither of which is an attempt to get around a block:
+ *   - a rest between batches, so sustained crawling never approaches the
+ *     budget in the first place;
+ *   - waiting out a block and trying the SAME request again once Vidwan's own
+ *     advertised window should have lapsed — the same courtesy already
+ *     extended to OpenAlex's daily reset. Nothing about the request changes
+ *     between attempts, and if Vidwan is still refusing after the retries,
+ *     the caller stops for good, exactly as before.
+ */
+const VIDWAN_REST_EVERY_BATCHES = 3;
+const VIDWAN_REST_MS = 90_000;
+const VIDWAN_BACKOFF_ATTEMPTS = 3;
+const VIDWAN_BACKOFF_MS = 3 * 60_000;
+
+async function withVidwanBackoff<T extends { blocked: boolean }>(
+  ctx: JobContext,
+  label: string,
+  attempt: () => Promise<T>,
+  maxAttempts = VIDWAN_BACKOFF_ATTEMPTS,
+  cooldownMs = VIDWAN_BACKOFF_MS,
+): Promise<T> {
+  let result = await attempt();
+  for (let tries = 1; result.blocked && tries < maxAttempts; tries += 1) {
+    ctx.log(`Vidwan: refused ${label} (attempt ${tries}/${maxAttempts}) — waiting ${Math.round(cooldownMs / 1000)}s for its own rate limit to lapse before trying again`, 'warn');
+    await new Promise((r) => setTimeout(r, cooldownMs));
+    ctx.checkpoint();
+    result = await attempt();
+  }
+  return result;
+}
 
 export interface RosterBuildOptions {
   /** OpenAlex ids from `data/indianInstitutions.ts`. */
@@ -147,7 +189,7 @@ export const DEPARTMENT_HINTS: Array<{ hint: string; department: string }> = [
  * has "faculty" in its URL, which is why the URL is judged before the
  * "listed on a faculty page" rule can call anyone on it a professor.
  */
-const NON_FACULTY_PAGE = /(visiting|adjunct|retired|former|emerit|alumni|student|scholar|phd|postdoc|off-staff|staff-directory|technical-staff|non-teaching|office|\/staff\/?$)/i;
+const NON_FACULTY_PAGE = /(visiting|adjunct|retired|former|previous|past-faculty|emerit|alumni|student|scholar|phd|postdoc|off-staff|staff-directory|technical-staff|non-teaching|office|\/staff\/?$)/i;
 
 /** Headings and labels the page parser sometimes returns as a person's name. */
 const NOT_A_NAME = /\b(professor|emerit|faculty|staff|department|chemistry|physics|engineering|science|sciences|biology|centre|center|laboratory|school|read more|view profile)\b/i;
@@ -163,6 +205,31 @@ export function shortInstitutionNames(name: string): string[] {
     out.push(`${abbr} ${m[2]}`);
   }
   return out;
+}
+
+/**
+ * Other spellings of a place in an institute's name that sources use instead of OpenAlex's. Measured
+ * on Vidwan, 30 Oct 2026: "Indian Institute of Technology Bhubaneswar" finds 2 people there, the
+ * site's own "…Bhubaneshwar" finds 173.
+ */
+const PLACE_SPELLINGS: Array<[RegExp, string]> = [
+  [/\bBhubaneswar\b/i, 'Bhubaneshwar'],
+  [/\bBhubaneshwar\b/i, 'Bhubaneswar'],
+];
+
+export function placeSpellings(name: string): string[] {
+  return PLACE_SPELLINGS.filter(([re]) => re.test(name)).map(([re, alt]) => name.replace(re, alt));
+}
+
+const GENERIC_KEY_WORDS = new Set(['indian', 'india', 'national', 'technology', 'information', 'science', 'sciences', 'management', 'research', 'education', 'engineering', 'and', 'advanced', 'studies', 'medical', 'all']);
+
+/**
+ * A name that names a kind of institute, not one: OpenAlex lists IIT Jammu's acronym as plain "IIT"
+ * (Oct 2026), and searching ORCID for that pulled in every IIT's staff (8,466 records).
+ */
+export function isGenericInstitutionName(name: string): boolean {
+  const key = instKey(name);
+  return !key || key.split(' ').every((w) => GENERIC_KEY_WORDS.has(w));
 }
 
 /** One person as assembled from every source, before the keep/drop decision. */
@@ -207,10 +274,10 @@ function currentEmploymentHere(
     const k = instKey(e.organization);
     if (!k) return false;
     for (const key of institute.keys) {
-      if (k === key || k.includes(key)) return true;
+      if (k === key || keyContains(k, key)) return true;
       // The employment name may be a shorter form of ours — but a bare
       // "Indian Institute of Technology" (no campus) must not match every IIT.
-      if (key.includes(k) && k.split(' ').length >= 3) return true;
+      if (keyContains(key, k) && k.split(' ').length >= 3) return true;
     }
     return false;
   });
@@ -225,6 +292,10 @@ export async function buildRoster(
 ): Promise<RosterBuildSummary> {
   const startedAt = Date.now();
   const sources = new Set<RosterSource>(options.sources ?? ['openalex', 'orcid', 'faculty_pages', 'vidwan']);
+  // The switch governs the live site; an injected fetcher (the tests) is not Vidwan.
+  if (!env.VIDWAN_ENABLED && !deps.vidwan && sources.delete('vidwan')) {
+    ctx.log('Vidwan is switched off (VIDWAN_ENABLED=false) — not searched', 'warn');
+  }
   const includeInferred = options.includeInferredRoles ?? true;
   const fetchers = {
     institutionProfile: deps.institutionProfile ?? getInstitutionProfile,
@@ -252,6 +323,9 @@ export async function buildRoster(
   }
 
   const results: InstitutionBuildResult[] = [];
+  // Set the first time Vidwan refuses connections outright (site down): it is then skipped for the
+  // remaining institutes with one message, instead of failing, and logging, once per institute.
+  let vidwanDown = false;
 
   // Institutes run a few at a time: their pages and Vidwan searches are on
   // different hosts, so the waits overlap. ORCID and OpenAlex stay under
@@ -291,6 +365,8 @@ export async function buildRoster(
       for (const a of profile.acronyms) if (a.length >= 3) names.add(a);
       for (const alt of profile.alternatives) if (/institute|technology|IIT|NIT/i.test(alt)) names.add(alt);
     }
+    for (const n of [...names]) for (const v of placeSpellings(n)) names.add(v);
+    for (const n of [...names]) if (isGenericInstitutionName(n)) names.delete(n);
     const keys = new Set<string>();
     for (const n of names) {
       const k = instKey(n);
@@ -439,7 +515,8 @@ export async function buildRoster(
     // institute's names. A maintained profile naming the institute is the
     // most current placement short of the institute's own page, and it
     // carries designation, department and often email and phone.
-    if (sources.has('vidwan') && scraperUp) {
+    if (sources.has('vidwan') && scraperUp && vidwanDown) r.errors.push('vidwan: skipped (site not accepting connections)');
+    if (sources.has('vidwan') && scraperUp && !vidwanDown) {
       ctx.setStage(`${institution.name}: searching Vidwan`, base + span * 0.62);
       try {
         // Listing first — a handful of requests. Profiles are read afterwards,
@@ -447,18 +524,25 @@ export async function buildRoster(
         // other sources already identified with an ORCID and a department
         // gains nothing from it, and a thousand-person institute would
         // otherwise take most of an hour.
-        const found = await fetchers.vidwan({
-          queries: [...names].filter((n) => n.length >= 6),
-          institutionTerms: [...names],
-          fetchProfiles: false,
-        });
+        const found = await withVidwanBackoff(ctx, 'the institute search', () =>
+          fetchers.vidwan({
+            queries: [...names].filter((n) => n.length >= 6),
+            institutionTerms: [...names],
+            fetchProfiles: false,
+          }),
+        );
         for (const e of found.errors) {
           r.errors.push(`vidwan: ${e.reason}${e.detail ? ` (${e.detail})` : ''}`);
+          if (e.reason === 'unreachable') {
+            if (!vidwanDown) ctx.log('Vidwan is not accepting connections (the site appears to be down) — skipped for this and the remaining institutes', 'warn');
+            vidwanDown = true;
+            continue;
+          }
           ctx.log(`Vidwan: ${e.reason}${e.detail ? ` (${e.detail})` : ''}`, found.blocked ? 'error' : 'warn');
         }
         const isHere = (row: VidwanRow): boolean => {
           const k = instKey(row.institute ?? '');
-          if (k && [...keys].some((key) => k === key || k.includes(key) || (key.includes(k) && k.split(' ').length >= 3))) return true;
+          if (k && [...keys].some((key) => k === key || keyContains(k, key) || (keyContains(key, k) && k.split(' ').length >= 3))) return true;
           const instText = `${row.institute ?? ''} ${row.card_text ?? ''}`.toLowerCase();
           return [...names].some((n) => n.length >= 6 && instText.includes(n.toLowerCase()));
         };
@@ -469,20 +553,30 @@ export async function buildRoster(
           const d = index_.find(row.name);
           return !d || !d.orcid || !d.department;
         });
-        ctx.log(`Vidwan: ${found.site_total ?? found.listing_profiles} experts match, ${cards.length} faculty-titled cards at the institute, ${needProfile.length} profiles to read`);
+        const narrowed = found.organisations?.length ? ` (organisation filter: ${found.organisations.join('; ')})` : ' (free-text search)';
+        ctx.log(`Vidwan: ${found.site_total ?? found.listing_profiles} experts match${narrowed}, ${found.pages_fetched} listing pages, ${cards.length} faculty-titled cards at the institute, ${needProfile.length} profiles to read`);
 
         const rows: VidwanRow[] = cards.filter((c) => !needProfile.includes(c));
         let blocked = found.blocked;
+        let batchNum = 0;
         for (let i = 0; i < needProfile.length && !blocked; i += 40) {
           ctx.checkpoint();
+          batchNum += 1;
+          if (batchNum > 1 && (batchNum - 1) % VIDWAN_REST_EVERY_BATCHES === 0) {
+            ctx.log(`Vidwan: resting ${Math.round(VIDWAN_REST_MS / 1000)}s after ${i} profiles, well under its own rate limit`);
+            await new Promise((r) => setTimeout(r, VIDWAN_REST_MS));
+            ctx.checkpoint();
+          }
           const batch = needProfile.slice(i, i + 40);
           ctx.setStage(`${institution.name}: Vidwan profiles ${Math.min(i + batch.length, needProfile.length)}/${needProfile.length}`, base + span * (0.62 + 0.08 * (i / Math.max(1, needProfile.length))));
           try {
-            const res = await fetchers.vidwanProfiles(batch.map((c) => ({ vidwan_id: c.vidwan_id, profile_url: c.profile_url, listing_name: c.name, designation: c.designation, institute: c.institute, subject: c.subject, card_text: c.card_text })));
+            const res = await withVidwanBackoff(ctx, `profile batch ${i + 1}-${i + batch.length}`, () =>
+              fetchers.vidwanProfiles(batch.map((c) => ({ vidwan_id: c.vidwan_id, profile_url: c.profile_url, listing_name: c.name, designation: c.designation, institute: c.institute, subject: c.subject, card_text: c.card_text }))),
+            );
             rows.push(...res.rows);
             if (res.blocked) {
               blocked = true;
-              ctx.log('Vidwan refused further requests — the remaining profiles are used from their listing cards', 'error');
+              ctx.log('Vidwan is still refusing requests after waiting for its rate limit to lapse — the remaining profiles are used from their listing cards', 'error');
               rows.push(...needProfile.slice(i + batch.length));
             }
           } catch (error) {
@@ -549,7 +643,7 @@ export async function buildRoster(
       for (const t of settings.facultyTargets) {
         if (!t.enabled) continue;
         const tk = normalizeInstitutionKey(t.universityName);
-        if (tk && k && (tk === k || tk.includes(k) || k.includes(tk))) {
+        if (tk && k && (tk === k || keyContains(tk, k) || keyContains(k, tk))) {
           targets.set(t.url, { url: t.url, department: t.department, label: /\(([^)]+)\)\s*$/.exec(t.note ?? '')?.[1] });
         }
       }
@@ -688,7 +782,7 @@ export async function buildRoster(
         continue;
       }
       try {
-        const outcome = await decideAndStore(d, institution, { includeInferred, orcidPerson: fetchers.orcidPerson, alwaysKeep: settings.discovery.rosterAlwaysKeep });
+        const outcome = await decideAndStore(d, institution, { includeInferred, orcidPerson: fetchers.orcidPerson, alwaysKeep: settings.discovery.rosterAlwaysKeep, log: (msg) => ctx.log(msg) });
         r[outcome] += 1;
       } catch (error) {
         personErrors += 1;
@@ -765,8 +859,9 @@ export function alwaysKeepMatch(
 async function decideAndStore(
   d: Draft,
   institution: { openAlexId: string; name: string },
-  opts: { includeInferred: boolean; orcidPerson: typeof getOrcidPerson; alwaysKeep?: AlwaysKeepEntry[] },
+  opts: { includeInferred: boolean; orcidPerson: typeof getOrcidPerson; alwaysKeep?: AlwaysKeepEntry[]; log?: (msg: string) => void },
 ): Promise<DraftOutcome> {
+  const log = opts.log ?? (() => {});
   // A person on the always-keep list is stored whatever the gates say; a
   // student title still wins (the list is about departments, not rank), and
   // an unknown rank is recorded as a stated one — the user vouched for them.
@@ -776,12 +871,12 @@ async function decideAndStore(
     for (const c of d.roles) role = strongerRole(role, c);
     if (role.category === 'excluded') {
       await markExcludedIfKnown(d, institution.openAlexId, `role: ${d.title ?? role.matched}`, 'role');
+      log(`${d.name}: excluded — on the always-keep list, but the role "${d.title ?? role.matched}" is still not kept`);
       return 'excludedRole';
     }
     if (!isFacultyRole(role.category)) role = { category: 'professor', matched: 'always-keep list' };
     const base = decideDomain({ department: d.department, topics: d.topics, text: [...d.keywords, d.bio ?? ''].join(' ') });
-    const outcome = await upsertMember(d, institution, role, { domain: base.domain, kept: true, gate: 'pinned', gateTerms: pinned.note ? [pinned.note] : undefined }, undefined);
-    return outcome;
+    return upsertMember(d, institution, role, { domain: base.domain, kept: true, gate: 'pinned', gateTerms: pinned.note ? [pinned.note] : undefined }, undefined, log);
   }
   // Role: the strongest stated title wins; no title anywhere → infer from output.
   let role: RoleDecision = { category: 'unknown' };
@@ -790,7 +885,10 @@ async function decideAndStore(
   if (role.category === 'unknown') {
     const inferred = inferSeniority({ ...d.stats, name: d.name });
     basis = inferred.basis;
-    if (inferred.senior && opts.includeInferred) role = { category: 'inferred', matched: 'publication record' };
+    if (inferred.senior && opts.includeInferred) {
+      role = { category: 'inferred', matched: 'publication record' };
+      log(`${d.name}: no title anywhere, but the publication record reads as senior — kept as inferred (${inferred.basis})`);
+    }
   } else if (
     role.category === 'excluded' &&
     role.source === 'orcid' &&
@@ -804,14 +902,19 @@ async function decideAndStore(
     if (inferred.senior && opts.includeInferred && d.stats.firstPublicationYear && year - d.stats.firstPublicationYear >= 12) {
       basis = `${inferred.basis}; ORCID title "${d.title ?? role.matched}" looks stale and was ignored`;
       role = { category: 'inferred', matched: 'publication record (stale ORCID title)' };
+      log(`${d.name}: ORCID title "${d.title ?? role.matched}" looks stale next to a ${year - d.stats.firstPublicationYear}-year record — overridden, kept as inferred`);
     }
   }
 
   if (role.category === 'excluded') {
     await markExcludedIfKnown(d, institution.openAlexId, `role: ${d.title ?? role.matched}`, 'role');
+    log(`${d.name}: excluded — role "${d.title ?? role.matched}"`);
     return 'excludedRole';
   }
-  if (!isFacultyRole(role.category)) return 'droppedUnconfirmed';
+  if (!isFacultyRole(role.category)) {
+    log(`${d.name}: dropped — no faculty title anywhere and the publication record does not read as senior (or inferred roles are off)`);
+    return 'droppedUnconfirmed';
+  }
 
   // Domain: department name first, topics second; corrosion gate for
   // civil/mechanical reads keywords, bio and topic names — and, when
@@ -829,6 +932,7 @@ async function decideAndStore(
         if (!d.websiteUrl && person.urls[0]) d.websiteUrl = person.urls[0].url;
         text = `${text} ${person.keywords.join(' ')}`;
         domain = decideDomain({ department: d.department, topics: d.topics, text });
+        log(`${d.name}: department "${d.department ?? DOMAIN_LABELS[domain.domain]}" is thin — pulled ORCID keywords to re-check the ${domain.gate ?? 'department'} gate`);
       }
     } catch {
       // Best effort.
@@ -836,10 +940,11 @@ async function decideAndStore(
   }
   if (!domain.kept) {
     await markExcludedIfKnown(d, institution.openAlexId, domain.reason ?? `domain: ${DOMAIN_LABELS[domain.domain]}`, 'domain', Boolean(d.department));
+    log(`${d.name}: excluded — ${domain.reason ?? `department "${d.department ?? DOMAIN_LABELS[domain.domain]}" not in scope`}`);
     return 'excludedDomain';
   }
 
-  return upsertMember(d, institution, role, domain, basis);
+  return upsertMember(d, institution, role, domain, basis, log);
 }
 
 /** A row from an imported list (a Vidwan/IRINS export, a hand-made CSV). */
@@ -883,7 +988,7 @@ export async function importRoster(rows: ImportRow[], sourceType: 'vidwan_import
     const key = instKey(row.institutionName);
     const institution = INDIAN_INSTITUTIONS.find((i) => {
       const k = instKey(i.name);
-      return Boolean(key && k && (k === key || k.includes(key) || key.includes(k)));
+      return Boolean(key && k && (k === key || keyContains(k, key) || keyContains(key, k)));
     });
     if (!institution) {
       summary.unknownInstitution += 1;
@@ -959,6 +1064,7 @@ async function upsertMember(
   role: RoleDecision,
   domain: DomainDecision,
   basis: string | undefined,
+  log: (msg: string) => void = () => {},
 ): Promise<'created' | 'updated'> {
   const now = new Date();
   const nameKey = normalizeNameKey(d.name);
@@ -1041,6 +1147,9 @@ async function upsertMember(
         recentPublications: [],
         evidenceText,
         instruments: [],
+        // Tagged now from the OpenAlex topics that came with the author list (free), so a later
+        // "only these areas" run can leave people out before spending a scoring credit on them.
+        applicationAreas: tagApplicationAreas({ topics, titles: [] }),
       },
       relevance: {},
       tags: [
@@ -1050,7 +1159,10 @@ async function upsertMember(
         ...(domain.gate === 'pinned' ? ['always-keep'] : []),
       ],
     };
-    await repositories.faculty.create(toCreate);
+    // Found by a conveyor run: the person starts flowing through the stages right away.
+    const flow = flowForNewMember();
+    await repositories.faculty.create(flow ? { ...toCreate, flow } : toCreate);
+    log(`${d.name}: added — ${role.category}, ${DOMAIN_LABELS[domain.domain]}${d.department ? ` (${d.department})` : ''} at ${institution.name}${affiliation ? ` [${affiliation.source}-verified current]` : ''}`);
     return 'created';
   }
 
@@ -1066,8 +1178,13 @@ async function upsertMember(
   if (domain.gate === 'electrochemistry') tags.add('electrochem-gate');
   if (domain.gate === 'pinned') tags.add('always-keep');
 
+  // A conveyor run re-finding someone: a restored person starts over at Verify,
+  // an eligible one whose affiliation check is stale is re-verified.
+  const flow = existing.status === 'excluded' ? flowForNewMember() : flowForExistingMember(existing);
+
   await repositories.faculty.updateById(existing.id, {
     ...(existing.status === 'excluded' ? { status: 'eligible' as const } : {}),
+    ...(flow ? { flow } : {}),
     person: {
       ...(existing.person.email ? {} : { email: d.email }),
       ...(existing.person.title ? {} : { title: d.title }),
@@ -1094,6 +1211,10 @@ async function upsertMember(
     sources,
     research: {
       topics: [...new Set([...existing.research.topics, ...topics])].slice(0, 20),
+      applicationAreas: tagApplicationAreas({
+        topics: [...new Set([...existing.research.topics, ...topics])].slice(0, 20),
+        titles: (existing.research.recentPublications ?? []).map((p) => p.title),
+      }),
       ...(d.stats.worksCount ? { worksCount: Math.max(existing.research.worksCount ?? 0, d.stats.worksCount) } : {}),
       ...(d.stats.hIndex ? { hIndex: Math.max(existing.research.hIndex ?? 0, d.stats.hIndex) } : {}),
       ...(d.stats.firstPublicationYear ? { firstPublicationYear: d.stats.firstPublicationYear } : {}),
@@ -1101,7 +1222,13 @@ async function upsertMember(
       ...(existing.research.evidenceText ? {} : { evidenceText }),
     },
     tags: [...tags],
-  }, { unset: existing.status === 'excluded' ? ['exclusionReason'] : [] });
+  }, {
+    unset: [
+      ...(existing.status === 'excluded' ? ['exclusionReason'] : []),
+      ...(flow ? ['flow.attempts', 'flow.lastError', 'flow.nextAttemptAt', 'flow.note', 'flow.forced'] : []),
+    ],
+  });
+  log(`${d.name}: updated — merged ${d.sources.map((s) => s.type).join('/')} into the existing record (${existing.status}${existing.status === 'excluded' ? ' → eligible' : ''})`);
   return 'updated';
 }
 

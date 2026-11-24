@@ -41,14 +41,28 @@ const emailThreadSchema = new Schema(
     subjectLine: { type: String, required: true },
     status: {
       type: String,
-      enum: ['open', 'replied', 'closed'],
-      default: 'open',
+      enum: ['draft', 'open', 'replied', 'closed'],
+      default: 'draft',
       required: true,
     },
     closedReason: {
       type: String,
       enum: ['replied', 'max_attempts_reached', 'manual', 'bounced'],
     },
+
+    /**
+     * A pending, unsent message: the AI drafts it here first; nothing is
+     * pushed into `messages[]` (and status never leaves 'draft') until a human
+     * approves it via `approveAndSendOutreach`. One draft at a time per thread.
+     */
+    draftType: {
+      type: String,
+      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2'],
+    },
+    draftSubject: String,
+    draftBody: String,
+    draftModel: String,
+    draftCreatedAt: Date,
 
     provider: { type: String, enum: ['ethereal', 'gmail'], required: true },
     providerThreadId: String,

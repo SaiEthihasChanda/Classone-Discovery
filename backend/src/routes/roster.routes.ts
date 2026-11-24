@@ -16,8 +16,11 @@ import { z } from 'zod';
 import { INDIAN_INSTITUTIONS } from '../data/indianInstitutions.js';
 import { ApiError, asyncHandler } from '../middleware/errorHandler.js';
 import { repositories, where, type Filter, type Query } from '../repositories/index.js';
-import { cancelJob, getJob, listJobs, startJob, type JobKind } from '../services/jobs/jobRunner.js';
+import fs from 'node:fs';
+import { cancelJob, getJob, jobLogPath, listJobs, startJob, type JobKind } from '../services/jobs/jobRunner.js';
 import { DOMAIN_LABELS } from '../services/roster/domains.js';
+import { TRACKED_AGENCIES } from '../services/funding/fundingAgencies.js';
+import { DEFAULT_APPLICATION_AREAS } from '../services/roster/applicationAreas.js';
 import { verifyRoster } from '../services/roster/rosterAffiliation.js';
 import { buildRoster, importRoster, type ImportRow } from '../services/roster/rosterBuilder.js';
 import { fillRoster } from '../services/roster/rosterFill.js';
@@ -29,6 +32,8 @@ import {
   promoteRoster,
   scoreRoster,
 } from '../services/roster/rosterRelevance.js';
+import { estimatePipeline, PIPELINE_STAGES, runPipeline } from '../services/roster/rosterPipeline.js';
+import { getRun, getRunLog, getRunLogText, listRuns } from '../services/jobs/rosterRunStore.js';
 import type { FacultyMember } from '../types/domain.js';
 import { exportFilename, rosterToCsv, rosterToXlsx, SPLIT_OPTIONS } from '../services/roster/rosterExport.js';
 import { fuzzyFilter, memberFields } from '../services/roster/fuzzy.js';
@@ -57,6 +62,12 @@ const listSchema = z.object({
   /** Instrument brand key ("palmsens") or "any" / "none". */
   brand: csv,
   vendor: z.enum(['classone', 'competitor', 'none']).optional(),
+  /** Funding agency acknowledged on recent papers (serb, anrf, dst, dbt, icmr, csir, birac), or "any" / "none". */
+  funder: csv,
+  /** Application area label(s) the member is tagged with, or "any" / "none". */
+  area: z.string().transform((v) => v.split('|').map((x) => x.trim()).filter(Boolean)).optional(),
+  /** Only people with a tracked-agency grant sanctioned in or after this year. */
+  fundedSince: z.coerce.number().int().min(1980).max(2100).optional(),
   hasEmail: z.enum(['yes', 'no']).optional(),
   hasTitle: z.enum(['yes', 'no']).optional(),
   hasPhone: z.enum(['yes', 'no']).optional(),
@@ -65,14 +76,36 @@ const listSchema = z.object({
   maxScore: z.coerce.number().min(0).max(100).optional(),
   scored: z.enum(['yes', 'no']).optional(),
   missing: z.enum(['email', 'title', 'phone', 'websiteUrl']).optional(),
+  /** Pipeline stage — one column of the Prospects board (see STAGE_FILTERS). */
+  stage: z.enum(['found', 'verified', 'scored', 'filling', 'crm', 'excluded']).optional(),
+  /** Conveyor state within the stage (queued, processing, review, failed …). */
+  flowState: csv,
   q: z.string().trim().optional(),
   sort: z.enum(['score', 'name', 'newest', 'works']).default('score'),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(500).default(50),
 });
 
+/**
+ * The Prospects board's columns: where each person is on the conveyor
+ * (`flow.stage`, see services/pipeline/flowEngine.ts). A column holds the
+ * people waiting for — or in — that column's next step: Found waits for
+ * Verify, Verified for Score, Scored for Promote, Filling info for Fill.
+ * Excluded sits outside the flow.
+ */
+const ACTIVE = where.in('status', ['eligible', 'promoted']);
+const STAGE_FILTERS: Record<string, Filter> = {
+  found: [ACTIVE, where.eq('flow.stage', 'verify')],
+  verified: [ACTIVE, where.eq('flow.stage', 'score')],
+  scored: [ACTIVE, where.eq('flow.stage', 'promote')],
+  filling: [ACTIVE, where.eq('flow.stage', 'fill')],
+  crm: [ACTIVE, where.eq('flow.stage', 'done')],
+  excluded: [where.eq('status', 'excluded')],
+};
+
 function buildQuery(params: z.infer<typeof listSchema>): Query {
-  const filter: Filter = [];
+  const filter: Filter = params.stage ? [...STAGE_FILTERS[params.stage]!] : [];
+  if (params.flowState?.length) filter.push(where.in('flow.state', params.flowState));
   if (params.status?.length) filter.push(where.in('status', params.status));
   if (params.domain?.length) filter.push(where.in('department.domain', params.domain));
   if (params.role?.length) filter.push(where.in('role.category', params.role));
@@ -85,6 +118,18 @@ function buildQuery(params: z.infer<typeof listSchema>): Query {
   }
   if (params.vendor === 'none') filter.push(where.eq('research.instruments', []));
   else if (params.vendor) filter.push(where.eq('research.instruments.vendor', params.vendor));
+  if (params.funder?.length) {
+    const tracked = TRACKED_AGENCIES.map((a) => a.key);
+    if (params.funder.includes('none')) filter.push(where.nin('research.funding.agency', tracked));
+    else if (params.funder.includes('any')) filter.push(where.in('research.funding.agency', tracked));
+    else filter.push(where.in('research.funding.agency', params.funder));
+  }
+  if (params.fundedSince !== undefined) filter.push(where.gte('research.funding.year', params.fundedSince));
+  if (params.area?.length) {
+    if (params.area.includes('none')) filter.push(where.in('research.applicationAreas', [null, []]));
+    else if (params.area.includes('any')) filter.push(where.nin('research.applicationAreas', [null, []]));
+    else filter.push(where.in('research.applicationAreas', params.area));
+  }
   const presence = (field: string, v?: 'yes' | 'no') => {
     if (v === 'yes') filter.push(where.ne(field, null));
     if (v === 'no') filter.push(where.eq(field, null));
@@ -156,6 +201,11 @@ rosterRouter.get(
       brands: settings.discovery.instrumentBrands.filter((b) => b.enabled).map((b) => ({ key: b.key, brand: b.brand, vendor: b.vendor })),
       splitOptions: Object.entries(SPLIT_OPTIONS).map(([key, o]) => ({ key, label: o.label })),
       defaultThreshold: DEFAULT_PROMOTE_THRESHOLD,
+      applicationAreas: DEFAULT_APPLICATION_AREAS.map((a) => ({ label: a.label, terms: a.terms })),
+      exportLayouts: [
+        { key: 'presentable', label: 'Presentable — Name, Department, Application, Phone, Email, Current system' },
+        { key: 'full', label: 'Full detail — every column' },
+      ],
     });
   }),
 );
@@ -210,8 +260,9 @@ rosterRouter.get(
     const parsed = listSchema.safeParse({ ...req.query, page: 1, limit: 500 });
     if (!parsed.success) throw ApiError.badRequest('Invalid query', parsed.error.flatten());
     const splitBy = typeof req.query.splitBy === 'string' && req.query.splitBy in SPLIT_OPTIONS ? req.query.splitBy : undefined;
+    const layout = req.query.layout === 'full' ? 'full' : 'presentable';
     const members = await queryAllMembers(parsed.data);
-    const buffer = await rosterToXlsx(members, splitBy);
+    const buffer = await rosterToXlsx(members, splitBy, layout);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${exportFilename(typeof req.query.filename === 'string' ? req.query.filename : undefined, 'xlsx')}"`);
     res.send(buffer);
@@ -239,6 +290,23 @@ rosterRouter.get(
   }),
 );
 
+// GET /api/roster/jobs/:id/log — the complete run log, every line ever
+// written (the job's in-memory `log` field is only the recent tail shown
+// live). ?download=1 sends it as an attachment; otherwise it renders inline
+// as plain text, which is enough to tail in a browser tab while a job runs.
+rosterRouter.get(
+  '/jobs/:id/log',
+  asyncHandler(async (req, res) => {
+    const filePath = jobLogPath(req.params.id!);
+    if (!fs.existsSync(filePath)) throw ApiError.notFound('Job log');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    if (req.query.download === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename="roster-job-${req.params.id}.log"`);
+    }
+    fs.createReadStream(filePath).pipe(res);
+  }),
+);
+
 rosterRouter.post(
   '/jobs/:id/cancel',
   asyncHandler(async (req, res) => {
@@ -247,13 +315,77 @@ rosterRouter.post(
   }),
 );
 
-function startOrConflict<T>(kind: JobKind, body: Parameters<typeof startJob<T>>[1]) {
+function startOrConflict<T>(kind: JobKind, body: Parameters<typeof startJob<T>>[1], requestOptions?: unknown) {
   try {
-    return startJob<T>(kind, body);
+    return startJob<T>(kind, body, requestOptions);
   } catch (error) {
     throw new ApiError(409, error instanceof Error ? error.message : String(error));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Runs — the durable history behind the live jobs above. `jobs` only knows
+// about the current process's in-memory state (pruned after 20 finished per
+// kind, gone on a restart); `runs` is every run ever started, kept in Mongo,
+// with its full log queryable by level and page rather than only a recent tail.
+// ---------------------------------------------------------------------------
+
+const runListSchema = z.object({
+  kind: z.string().optional(),
+  status: z.string().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+rosterRouter.get(
+  '/runs',
+  asyncHandler(async (req, res) => {
+    const parsed = runListSchema.safeParse(req.query);
+    if (!parsed.success) throw ApiError.badRequest('Invalid query', parsed.error.flatten());
+    const { items, total } = await listRuns(parsed.data);
+    res.json({ items, total, page: parsed.data.page, limit: parsed.data.limit });
+  }),
+);
+
+rosterRouter.get(
+  '/runs/:id',
+  asyncHandler(async (req, res) => {
+    const run = await getRun(req.params.id!);
+    if (!run) throw ApiError.notFound('Run');
+    res.json({ run });
+  }),
+);
+
+const runLogSchema = z.object({
+  level: csv,
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(1000).default(200),
+});
+
+// GET /api/roster/runs/:id/log?level=warn,error&page=1&limit=200 — paginated,
+// filterable low-level detail: every line the run ever logged.
+rosterRouter.get(
+  '/runs/:id/log',
+  asyncHandler(async (req, res) => {
+    const parsed = runLogSchema.safeParse(req.query);
+    if (!parsed.success) throw ApiError.badRequest('Invalid query', parsed.error.flatten());
+    const { items, total } = await getRunLog(req.params.id!, parsed.data);
+    res.json({ items, total, page: parsed.data.page, limit: parsed.data.limit });
+  }),
+);
+
+// GET /api/roster/runs/:id/log.txt — the complete log as one plain-text file.
+rosterRouter.get(
+  '/runs/:id/log.txt',
+  asyncHandler(async (req, res) => {
+    const text = await getRunLogText(req.params.id!);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    if (req.query.download === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename="roster-run-${req.params.id}.log"`);
+    }
+    res.send(text);
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Stage 1 — build
@@ -275,7 +407,7 @@ rosterRouter.post(
     if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
     const unknown = parsed.data.institutionIds.filter((id) => !INDIAN_INSTITUTIONS.some((i) => i.openAlexId === id));
     if (unknown.length) throw ApiError.badRequest(`Unknown institute ids: ${unknown.join(', ')}`);
-    const job = startOrConflict('roster_build', (ctx) => buildRoster(parsed.data, ctx));
+    const job = startOrConflict('roster_build', (ctx) => buildRoster(parsed.data, ctx), parsed.data);
     res.status(202).json({ job });
   }),
 );
@@ -290,7 +422,7 @@ rosterRouter.post(
     const schema = z.object({ ids: z.array(objectId).optional(), freshDays: z.number().int().min(0).max(365).optional(), limit: z.number().int().min(1).optional() });
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
-    const job = startOrConflict('roster_verify', (ctx) => verifyRoster(parsed.data, ctx));
+    const job = startOrConflict('roster_verify', (ctx) => verifyRoster(parsed.data, ctx), parsed.data);
     res.status(202).json({ job });
   }),
 );
@@ -312,7 +444,7 @@ rosterRouter.post(
     const schema = z.object({ ids: z.array(objectId).optional(), rescore: z.boolean().optional(), sinceYears: z.number().int().min(1).max(20).optional(), limit: z.number().int().min(1).optional() });
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
-    const job = startOrConflict('roster_score', (ctx) => scoreRoster(parsed.data, ctx));
+    const job = startOrConflict('roster_score', (ctx) => scoreRoster(parsed.data, ctx), parsed.data);
     res.status(202).json({ job });
   }),
 );
@@ -335,7 +467,7 @@ rosterRouter.post(
     const schema = z.object({ institutionIds: z.array(z.string()).min(1).max(100), rescore: z.boolean().optional() });
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
-    const job = startOrConflict('roster_sweep', (ctx) => sweepInstruments(parsed.data, ctx));
+    const job = startOrConflict('roster_sweep', (ctx) => sweepInstruments(parsed.data, ctx), parsed.data);
     res.status(202).json({ job });
   }),
 );
@@ -358,7 +490,7 @@ rosterRouter.post(
     const schema = z.object({ threshold: z.number().min(0).max(100).optional(), ids: z.array(objectId).optional(), identifyInstruments: z.boolean().optional(), includeInstrumentOwners: z.boolean().optional(), limit: z.number().int().min(1).optional() });
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
-    const job = startOrConflict('roster_promote', (ctx) => promoteRoster(parsed.data, ctx));
+    const job = startOrConflict('roster_promote', (ctx) => promoteRoster(parsed.data, ctx), parsed.data);
     res.status(202).json({ job });
   }),
 );
@@ -370,11 +502,70 @@ rosterRouter.post(
 rosterRouter.post(
   '/fill',
   asyncHandler(async (req, res) => {
-    const schema = z.object({ ids: z.array(objectId).optional(), useScraper: z.boolean().optional(), limit: z.number().int().min(1).optional() });
+    const schema = z.object({
+      ids: z.array(objectId).optional(),
+      useScraper: z.boolean().optional(),
+      useGeminiBackfill: z.boolean().optional(),
+      limit: z.number().int().min(1).optional(),
+    });
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
-    const job = startOrConflict('roster_fill', (ctx) => fillRoster(parsed.data, ctx));
+    const job = startOrConflict('roster_fill', (ctx) => fillRoster(parsed.data, ctx), parsed.data);
     res.status(202).json({ job });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Pipeline — chained stages, one institute at a time, chosen from the page
+// ---------------------------------------------------------------------------
+
+const pipelineSchema = z.object({
+  institutionIds: z.array(z.string()).min(1).max(100),
+  stages: z.array(z.enum(['build', 'verify', 'score', 'sweep', 'promote', 'fill'])).min(1),
+  sources: z.array(z.enum(['orcid', 'openalex', 'faculty_pages', 'vidwan'])).min(1).optional(),
+  includeInferredRoles: z.boolean().optional(),
+  minWorks: z.number().int().min(1).max(100).optional(),
+  threshold: z.number().min(0).max(100).optional(),
+  identifyInstruments: z.boolean().optional(),
+  includeInstrumentOwners: z.boolean().optional(),
+  sweepBrands: z.array(z.string()).optional(),
+  useScraper: z.boolean().optional(),
+  useGeminiBackfill: z.boolean().optional(),
+  /** Keyword / application-area override for this run. */
+  focus: z
+    .object({
+      items: z.array(z.string().trim().min(1).max(300)).min(1).max(100),
+      as: z.enum(['keywords', 'applicationAreas']),
+      mode: z.enum(['add', 'only']),
+    })
+    .optional(),
+});
+
+rosterRouter.post(
+  '/pipeline/estimate',
+  asyncHandler(async (req, res) => {
+    const parsed = pipelineSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
+    res.json(await estimatePipeline(parsed.data));
+  }),
+);
+
+rosterRouter.post(
+  '/pipeline',
+  asyncHandler(async (req, res) => {
+    const parsed = pipelineSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw ApiError.badRequest('Invalid request', parsed.error.flatten());
+    const unknown = parsed.data.institutionIds.filter((id) => !INDIAN_INSTITUTIONS.some((i) => i.openAlexId === id));
+    if (unknown.length) throw ApiError.badRequest(`Unknown institute ids: ${unknown.join(', ')}`);
+    const job = startOrConflict('roster_pipeline', (ctx) => runPipeline(parsed.data, ctx), parsed.data);
+    res.status(202).json({ job });
+  }),
+);
+
+rosterRouter.get(
+  '/pipeline/stages',
+  asyncHandler(async (_req, res) => {
+    res.json({ stages: PIPELINE_STAGES });
   }),
 );
 

@@ -8,8 +8,11 @@ target is wrapped and failures are reported alongside successes.
 import asyncio
 import re
 
-from fastapi import APIRouter
+import httpx
 
+from fastapi import APIRouter, HTTPException
+
+from ..core.config import settings
 from ..core.schemas import (
     FacultyScrapeRequest,
     FindFacultyPagesRequest,
@@ -44,7 +47,20 @@ from ..scrapers.news_scraper import (
 from ..scrapers.static_fetcher import FetchError, fetch_page
 from ..scrapers.target_finder import find_department_faculty_pages
 from ..scrapers.vidwan import VidwanBlocked, VidwanClient, VidwanListing, looks_like_student
+from ..scrapers.dynamic_fetcher import fetch_page_dynamic
 from ..scrapers.tiered_fetcher import fetch_with_escalation
+
+# Connection-level failures: the host refused, reset or dropped the connection (or the TLS
+# handshake), so nothing was served at all. Reported as UNREACHABLE with a readable detail
+# (httpx's ConnectError usually carries an empty message).
+_UNREACHABLE = (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError, httpx.ReadError)
+
+
+def _vidwan_error(target: str, exc: BaseException) -> ScrapeError:
+    if isinstance(exc, _UNREACHABLE):
+        return ScrapeError(target=target, reason=ScrapeErrorReason.UNREACHABLE,
+                           detail=f"Vidwan is not accepting connections ({type(exc).__name__}); the site appears to be down")
+    return ScrapeError(target=target, reason=ScrapeErrorReason.UNKNOWN, detail=f"{type(exc).__name__}: {exc}")
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
 
@@ -62,13 +78,17 @@ async def scrape_faculty(request: FacultyScrapeRequest) -> FacultyScrapeResponse
     results: list[FacultyScrapeResult] = []
     errors: list[ScrapeError] = []
 
-    async def enrich_emails_from_profiles(people: list) -> None:
+    async def enrich_emails_from_profiles(people: list, in_browser: bool = False) -> None:
         """Second hop: fetch profile pages for people with no email on the index.
 
         Bounded by `max_profile_fetches` because every fetch waits on the
         per-domain rate limit. Failures are ignored — a missing email is a
         normal outcome, not an error worth reporting to Node.
+
+        `in_browser`: the listing itself needed a browser, so its profile pages
+        are script-built too (IIT Jammu's are an empty shell over plain HTTP).
         """
+        fetch = fetch_page_dynamic if in_browser else fetch_page
         budget = request.options.max_profile_fetches
         for person in people:
             if budget <= 0:
@@ -78,7 +98,7 @@ async def scrape_faculty(request: FacultyScrapeRequest) -> FacultyScrapeResponse
 
             budget -= 1
             try:
-                profile_html = await fetch_page(
+                profile_html = await fetch(
                     person.profile_url, request.options.timeout_sec_per_page
                 )
             except (FetchError, Exception):  # noqa: B014 - any failure just means no email
@@ -110,7 +130,7 @@ async def scrape_faculty(request: FacultyScrapeRequest) -> FacultyScrapeResponse
             people = parse_faculty_page(outcome.html, url)
 
             if request.options.follow_profiles:
-                await enrich_emails_from_profiles(people)
+                await enrich_emails_from_profiles(people, in_browser=outcome.tier != "static")
 
             results.append(
                 FacultyScrapeResult(
@@ -233,6 +253,11 @@ async def find_faculty_pages_endpoint(request: FindFacultyPagesRequest) -> FindF
     return out
 
 
+def _require_vidwan() -> None:
+    if not settings.vidwan_enabled:
+        raise HTTPException(status_code=503, detail="Vidwan is switched off (VIDWAN_ENABLED=false)")
+
+
 @router.post("/vidwan", response_model=VidwanSearchResponse)
 async def vidwan_search(request: VidwanSearchRequest) -> VidwanSearchResponse:
     """Searches Vidwan and reads the matching researchers' profiles.
@@ -242,6 +267,7 @@ async def vidwan_search(request: VidwanSearchRequest) -> VidwanSearchResponse:
     returned. Cards whose designation is a student title are returned from the
     listing alone — no profile fetch — since the roster drops them anyway.
     """
+    _require_vidwan()
     out = VidwanSearchResponse(job_id=request.job_id)
     client = VidwanClient(timeout_sec=request.timeout_sec_per_page, base_url=request.base_url or "https://vidwan.inflibnet.ac.in")
     terms = [t.lower() for t in request.institution_terms if t.strip()]
@@ -250,8 +276,9 @@ async def vidwan_search(request: VidwanSearchRequest) -> VidwanSearchResponse:
         if not terms:
             return True
         hay = " ".join(t for t in texts if t).lower().replace(",", " ")
-        hay = re.sub(r"\s+", " ", hay)
-        return any(re.sub(r"\s+", " ", t.replace(",", " ")) in hay for t in terms)
+        hay = f" {re.sub(r'\s+', ' ', hay)} "
+        # Whole words: "iit bhu" must not match "iit bhubaneswar".
+        return any(f" {re.sub(r'\s+', ' ', t.replace(',', ' ')).strip()} " in hay for t in terms)
 
     def row_from(listing, profile=None) -> VidwanRow:
         if profile is None:
@@ -271,21 +298,36 @@ async def vidwan_search(request: VidwanSearchRequest) -> VidwanSearchResponse:
 
     try:
         listings: dict[str, object] = {}
-        for query in request.queries:
-            try:
-                found, pages, total = await client.search(query, max_pages=request.max_pages_per_query)
-            except VidwanBlocked as exc:
-                out.blocked = True
-                out.errors.append(ScrapeError(target=query, reason=ScrapeErrorReason.BLOCKED, detail=str(exc)))
+        done_orgs: set[frozenset[str]] = set()
+        # Pass 1 pages only queries narrowed to the institute's Organisation-filter values. Pass 2
+        # (free text) runs only when no query found any, e.g. an institute Vidwan has no facet for.
+        stop = False
+        for free_text in (False, True):
+            if stop or (free_text and (done_orgs or not terms)):
                 break
-            except Exception as exc:  # noqa: BLE001
-                out.errors.append(ScrapeError(target=query, reason=ScrapeErrorReason.UNKNOWN, detail=f"{type(exc).__name__}: {exc}"))
-                continue
-            out.pages_fetched += pages
-            if total is not None:
-                out.site_total = (out.site_total or 0) + total
-            for item in found:
-                listings.setdefault(item.vidwan_id, item)
+            for query in request.queries:
+                try:
+                    found, pages, total = await client.search(
+                        query, max_pages=request.max_pages_per_query, org_terms=request.institution_terms,
+                        done_orgs=done_orgs, free_text_fallback=free_text,
+                    )
+                    out.organisations = sorted(set(out.organisations) | set(client.last_orgs))
+                except VidwanBlocked as exc:
+                    out.blocked = True
+                    out.errors.append(ScrapeError(target=query, reason=ScrapeErrorReason.BLOCKED, detail=str(exc)))
+                    stop = True
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    out.errors.append(_vidwan_error(query, exc))
+                    if isinstance(exc, _UNREACHABLE):
+                        stop = True  # the site is down: the remaining queries would fail the same way
+                        break
+                    continue
+                out.pages_fetched += pages
+                if total is not None:
+                    out.site_total = (out.site_total or 0) + total
+                for item in found:
+                    listings.setdefault(item.vidwan_id, item)
         out.listing_profiles = len(listings)
 
         # Keep only people the card places at the institute; the profile page
@@ -330,6 +372,7 @@ async def vidwan_search(request: VidwanSearchRequest) -> VidwanSearchResponse:
 async def vidwan_profiles(request: VidwanProfilesRequest) -> VidwanSearchResponse:
     """Reads a batch of Vidwan profile pages (see `VidwanProfilesRequest`),
     several at a time under the client's pacing."""
+    _require_vidwan()
     out = VidwanSearchResponse(job_id=request.job_id)
     client = VidwanClient(timeout_sec=request.timeout_sec_per_page, base_url=request.base_url or "https://vidwan.inflibnet.ac.in")
     listings = [

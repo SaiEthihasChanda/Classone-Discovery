@@ -13,7 +13,7 @@ import { ErrorBanner, Loading } from '../../components/common';
 
 const KINDS: InstitutionKind[] = ['IIT', 'NIT', 'IIIT'];
 
-type Tab = 'keywords' | 'institutions' | 'sources' | 'scraping' | 'danger';
+type Tab = 'keywords' | 'institutions' | 'sources' | 'scraping' | 'outreach' | 'danger';
 
 /**
  * Settings — everything that governs discovery, editable without touching files.
@@ -113,19 +113,22 @@ export function SettingsPage() {
         <div className="alert alert-info">You have unsaved changes.</div>
       )}
 
-      <div className="toolbar" style={{ gap: 6 }}>
+      <div className="tabs" role="tablist">
         {(
           [
             ['keywords', 'Search keywords'],
             ['institutions', 'Institutions'],
             ['sources', 'Scrape sources'],
             ['scraping', 'Scraping behaviour'],
+            ['outreach', 'Email & AI'],
             ['danger', 'Danger zone'],
           ] as [Tab, string][]
         ).map(([key, label]) => (
           <button
             key={key}
-            className={`btn btn-sm${tab === key ? ' btn-primary' : ''}`}
+            role="tab"
+            aria-selected={tab === key}
+            className={`tab${tab === key ? ' active' : ''}`}
             onClick={() => setTab(key)}
           >
             {label}
@@ -141,8 +144,81 @@ export function SettingsPage() {
       )}
       {tab === 'sources' && <SourcesTab draft={draft} update={update} reload={reload} />}
       {tab === 'scraping' && <ScrapingTab draft={draft} update={update} />}
+      {tab === 'outreach' && <OutreachTab />}
       {tab === 'danger' && <DangerZoneTab />}
     </>
+  );
+}
+
+/** Read-only view of the email + AI config in effect — these live in .env, not the settings document. */
+function OutreachTab() {
+  const { data, loading, error } = useAsync(() => api.outreachConfig(), []);
+  if (loading && !data) return <Loading />;
+  if (error) return <ErrorBanner message={error} />;
+  if (!data) return null;
+  const yes = (ok: boolean, label = ok ? 'Set' : 'Not set') => (
+    <span className={`badge ${ok ? 'badge-approved' : 'badge-pending'}`}>{label}</span>
+  );
+  const u = data.ai.backfillUsage;
+
+  return (
+    <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
+      <section className="card card-pad">
+        <h2 className="section-title">Email sending</h2>
+        <dl className="kv">
+          <dt>Provider</dt>
+          <dd>{data.email.provider === 'gmail' ? 'Gmail (real delivery)' : 'Ethereal (sandbox — nothing is delivered)'}</dd>
+          <dt>Sends as</dt>
+          <dd>
+            {data.email.fromName} &lt;{data.email.fromAddress}&gt;
+          </dd>
+          <dt>Gmail OAuth</dt>
+          <dd>{yes(data.email.gmailConfigured, data.email.gmailConfigured ? 'Connected' : 'Not connected')}</dd>
+        </dl>
+      </section>
+
+      <section className="card card-pad">
+        <h2 className="section-title">Follow-ups</h2>
+        <dl className="kv">
+          <dt>Wait before follow-up</dt>
+          <dd>{data.followUp.waitDays} days</dd>
+          <dt>Max follow-ups</dt>
+          <dd>{data.followUp.maxAttempts}</dd>
+          <dt>Automatic check</dt>
+          <dd>
+            {data.followUp.cronEnabled ? (
+              <>On — <span className="mono">{data.followUp.schedule}</span></>
+            ) : (
+              'Off (CRON_ENABLED=false) — follow-ups are not drafted automatically'
+            )}
+          </dd>
+        </dl>
+        <p className="muted small" style={{ margin: '10px 0 0' }}>Due follow-ups are drafted, never sent — each one waits on the Outreach page for approval.</p>
+      </section>
+
+      <section className="card card-pad">
+        <h2 className="section-title">AI</h2>
+        <dl className="kv">
+          <dt>Lead scoring</dt>
+          <dd>
+            {data.ai.scoringProvider} {yes(data.ai.scoringKeySet)}
+          </dd>
+          <dt>Web-search backfill</dt>
+          <dd>
+            {data.ai.backfillModel} {yes(data.ai.backfillKeySet, data.ai.backfillKeySet ? 'Billed key set' : 'No billed key')}
+          </dd>
+          <dt>Backfill this month</dt>
+          <dd>
+            {u.count.toLocaleString()} of {u.freeAllowance.toLocaleString()} free searches
+            {u.overFreeAllowance && ` — ~$${u.estimatedMonthCostUsd.toFixed(2)} billed`}
+          </dd>
+        </dl>
+      </section>
+
+      <p className="muted small" style={{ gridColumn: '1 / -1', margin: 0 }}>
+        These values come from the server's <span className="mono">.env</span> file; change them there and restart the backend.
+      </p>
+    </div>
   );
 }
 

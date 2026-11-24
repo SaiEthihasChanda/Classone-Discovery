@@ -37,6 +37,10 @@ async function main(): Promise<void> {
   process.env.MONGO_DB_NAME = 'smoke_test';
   process.env.DB_PROVIDER = 'mongo';
   process.env.NODE_ENV = 'test';
+  // The suite drives the API without a sign-in; .env may have auth on for local use.
+  process.env.AUTH_ENABLED = 'false';
+  // Deterministic scoring: never call a live model from tests (blank = the keyword heuristic).
+  for (const k of ['GEMINI_API_KEY', 'GEMINI_BACKFILL_API_KEY', 'OPENAI_API_KEY', 'JEV_API_KEY']) process.env[k] = '';
   process.env.PORT = '4999';
   // Never let a test reach a real scraper: web enrichment would fetch real
   // institute pages. Anything scraper-shaped in these tests is injected.
@@ -914,7 +918,120 @@ async function main(): Promise<void> {
   });
 
   console.log('\nAffiliation precedence — directory/IRINS > Vidwan > ORCID > OpenAlex:\n');
-  const { combineAffiliationEvidence } = await import('../services/leads/affiliationService.js');
+  const { combineAffiliationEvidence, affiliationPatch } = await import('../services/leads/affiliationService.js');
+  const { instrumentNeedsReview, confirmedInstruments, mergeInstruments } = await import('../services/discovery/instrumentDetector.js');
+
+  const { resolveFocus, parseArea, tagApplicationAreas, DEFAULT_APPLICATION_AREAS } = await import('../services/roster/applicationAreas.js');
+
+  await check('application areas: tagging uses topics (x2) and titles (x1) with a floor of 2; strongest first', async () => {
+    const areas = tagApplicationAreas({
+      topics: ['Advanced Battery Technologies Research', 'Electrochemical sensors and biosensors'],
+      titles: ['A wearable sweat biosensor', 'Graphene supercapacitor electrodes'],
+    });
+    assert.deepEqual(areas.slice(0, 2), ['Biosensing & point-of-care diagnostics', 'Battery testing, fuel cells & solar cells']);
+    assert.deepEqual(tagApplicationAreas({ topics: [], titles: ['One corrosion paper'] }), [], 'a single title is below the floor');
+    assert.deepEqual(tagApplicationAreas({ topics: ['Microgrid Control and Optimization'], titles: [] }), [], 'power electronics is in no focus area');
+  });
+
+  await check('keyword override: modes resolve to the right scoring terms, areas and promotion rule', async () => {
+    assert.equal(resolveFocus().areas.length, DEFAULT_APPLICATION_AREAS.length);
+    const kwOnly = resolveFocus({ items: ['Glove Box', 'electroplating'], as: 'keywords', mode: 'only' });
+    assert.deepEqual(kwOnly.keywords, ['glove box', 'electroplating']);
+    assert.equal(kwOnly.keywordsOnly, true);
+    assert.equal(kwOnly.requireArea, false);
+    const areasOnly = resolveFocus({ items: ['Biosensing & point-of-care diagnostics', 'Electroplating and anodizing: electroplat, anodiz'], as: 'applicationAreas', mode: 'only' });
+    assert.equal(areasOnly.areas.length, 2);
+    assert.equal(areasOnly.requireArea, true);
+    assert.ok(areasOnly.areas[0]!.terms.includes('biosens'), 'a default label reuses its curated terms');
+    assert.deepEqual(areasOnly.areas[1]!.terms, ['electroplat', 'anodiz'], '"Label: terms" gives explicit terms');
+    const added = resolveFocus({ items: ['Membrane separation'], as: 'applicationAreas', mode: 'add' });
+    assert.equal(added.areas.length, DEFAULT_APPLICATION_AREAS.length + 1);
+    assert.ok(parseArea('Membrane separation')!.terms.some((t) => t.startsWith('membran')), 'terms derived from the label');
+  });
+
+  await check('keyword override: the rule-based scorer counts only the given keywords in "only" mode', async () => {
+    const { HeuristicProvider } = await import('../services/ai/heuristicProvider.js');
+    const candidate = { name: 'X', topics: ['cyclic voltammetry'], publications: [{ title: 'Glove box assembly of lithium cells' }], grants: [], evidenceText: 'cyclic voltammetry potentiostat', instruments: [] } as never;
+    const p = new HeuristicProvider();
+    const normal = await p.enrich({ candidate, catalog: [] });
+    const only = await p.enrich({ candidate, catalog: [], focus: { keywords: ['glove box'], keywordsOnly: true, areas: [] } });
+    const none = await p.enrich({ candidate, catalog: [], focus: { keywords: ['anodizing'], keywordsOnly: true, areas: [] } });
+    assert.ok(normal.signals.productRelevance! > only.signals.productRelevance!, 'only-mode ignores the built-in terms');
+    assert.ok(only.signals.productRelevance! > 0, 'the given keyword counts');
+    assert.equal(none.signals.productRelevance, 0);
+  });
+
+  await check('presentable Excel export: six columns, title band, colour-coded system, cleaned department and phone', async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const { rosterToXlsx } = await import('../services/roster/rosterExport.js');
+    const member = (name: string, extra: Record<string, unknown>) => ({
+      id: name, status: 'promoted', person: { name, normalizedNameKey: name, email: `${name}@iitx.ac.in`, phone: '01126596132' },
+      role: { category: 'professor' }, department: { name: 'Department of Chemical Engg & Biotechnology', domain: 'chemistry' },
+      institution: { name: 'Indian Institute of Technology X', discoveredName: 'Indian Institute of Technology X' },
+      sources: [], tags: [], relevance: { score: 60 },
+      research: { topics: ['Electrochemical sensors and biosensors'], recentPublications: [], instruments: [], ...extra },
+    });
+    const buf = await rosterToXlsx([
+      member('a', { instruments: [{ brandKey: 'palmsens', brand: 'PalmSens', vendor: 'classone', model: 'PalmSens4', evidence: 'x', matchedVia: 'text_match' }] }),
+      member('b', { instruments: [{ brandKey: 'chi', brand: 'CH Instruments', vendor: 'competitor', model: 'CHI660E', evidence: 'x', matchedVia: 'text_match' }] }),
+    ] as never);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('All')!;
+    assert.match(String(ws.getCell('A1').value), /IIT X — Researchers for Class One Systems/);
+    assert.deepEqual((ws.getRow(6).values as unknown[]).slice(1, 7), ['Name', 'Department', 'Application', 'Phone', 'Email', 'Current System Used']);
+    const rows = [7, 8].map((r) => ws.getRow(r));
+    assert.equal(rows[0]!.getCell(2).value, 'Chemical Engineering and Biotechnology');
+    assert.equal(rows[0]!.getCell(4).value, '011 2659 6132');
+    const sys = Object.fromEntries(rows.map((r) => [String(r.getCell(6).value), (r.getCell(6).fill as { fgColor?: { argb?: string } }).fgColor?.argb]));
+    assert.equal(sys['PalmSens PalmSens4'], 'FFE2F0D9', 'Class One system is green');
+    assert.equal(sys['CH Instruments CHI660E'], 'FFFFF2CC', 'competitor system is amber');
+    assert.equal(rows[0]!.getCell(3).value, 'Biosensing & point-of-care diagnostics');
+  });
+
+  const { decodeAward, agencyOf, summariseFunding, agenciesIn, latestGrantYear } = await import('../services/funding/fundingAgencies.js');
+
+  await check('funding: grant numbers decode to scheme and sanction year; unknown formats stay undecoded', async () => {
+    assert.deepEqual(decodeAward('CRG/2022/001541'), { scheme: 'Core Research Grant (CRG)', year: 2022, serbScheme: true });
+    assert.equal(decodeAward('SPG/2021/004745').scheme, 'POWER Grant (SPG)');
+    assert.equal(decodeAward('EMR/2016').year, 2016, 'a truncated number still gives the year');
+    assert.equal(decodeAward('DST/INSPIRE/04/2019/001234').scheme, 'INSPIRE Faculty Fellowship');
+    assert.deepEqual(decodeAward('01(2955)/18/EMR-II'), { scheme: 'CSIR Extramural Research (EMR-II)', year: 2018, serbScheme: false });
+    assert.equal(decodeAward('BT/PR12345/NNT/28/1234/2017').scheme, undefined, 'formats we do not know are not guessed');
+    assert.equal(decodeAward('BT/PR12345/NNT/28/1234/2017').year, 2017);
+  });
+
+  await check('funding: agencies come from the OpenAlex funder id, else the name; a DST-credited SERB number is SERB', async () => {
+    assert.equal(agencyOf('anything', 'https://openalex.org/F4320334771'), 'serb');
+    assert.equal(agencyOf('Department of Biotechnology, Ministry of Science and Technology, India'), 'dbt');
+    assert.equal(agencyOf('Anusandhan National Research Foundation'), 'anrf');
+    assert.equal(agencyOf('University Grants Commission'), 'other');
+    const f = summariseFunding([
+      { id: 'W1', title: 'Paper A', publication_year: 2025, awards: [{ funder_id: 'F4320320719', funder_display_name: 'Department of Science and Technology', funder_award_id: 'CRG/2022/001541' }], funders: [{ id: 'F4320320719', display_name: 'Department of Science and Technology' }] },
+      { id: 'W2', title: 'Paper B', publication_year: 2024, awards: [{ funder_id: 'F4320334771', funder_display_name: 'Science and Engineering Research Board', funder_award_id: 'crg/2022/001541' }] },
+      { id: 'W3', title: 'Paper C', publication_year: 2023, funders: [{ id: 'F4320320721', display_name: 'Council of Scientific and Industrial Research, India' }, { id: 'F4320320767', display_name: 'University Grants Commission' }] },
+    ]);
+    const crg = f.find((x) => x.awardId?.toUpperCase() === 'CRG/2022/001541')!;
+    assert.equal(crg.agency, 'serb', 'DST-credited CRG number counted as SERB');
+    assert.equal(crg.papers, 2, 'the same grant on two papers is one entry');
+    assert.equal(crg.workTitle, 'Paper A', 'the newest acknowledging paper is kept');
+    assert.ok(f.some((x) => x.agency === 'csir' && !x.awardId), 'a funder thanked without a number is still recorded');
+    assert.deepEqual(agenciesIn(f), ['serb', 'csir']);
+    assert.equal(latestGrantYear(f), 2022);
+    assert.equal(f[f.length - 1]!.agency, 'other', 'untracked funders sort last');
+  });
+
+  await check('instrument review: a bare brand in a non-electrochemistry paper needs review; a model, a matched sentence or an electrochemical title clears it', async () => {
+    const bare = (title: string) => ({ brandKey: 'biologic', brand: 'BioLogic SAS', vendor: 'competitor' as const, evidence: `Full text of "${title}" mentions BioLogic SAS.`, matchedVia: 'fulltext_search' as const });
+    assert.equal(instrumentNeedsReview(bare('Biopharmaceutical Industry Capability Building in India: Report from a Symposium')), true);
+    assert.equal(instrumentNeedsReview(bare('Facile synthesis of cobalt oxide nanocomposite for aqueous supercapacitor application')), false);
+    assert.equal(instrumentNeedsReview({ ...bare('Effects of superstructure flexibility on foundation vibrations'), model: 'SP-200' }), false, 'a named model clears it');
+    assert.equal(instrumentNeedsReview({ ...bare('x'), matchedVia: 'text_match', evidence: '…measured on a BioLogic SP-200…' }), false, 'our own sentence match clears it');
+    assert.equal(instrumentNeedsReview({ ...bare('x'), evidence: 'Full text of "Electrochemical CO2 reduction on Cu" (2023) and 2 more mentions BioLogic SAS.' }), false, 'the year / "and N more" form is parsed');
+    const merged = mergeInstruments([bare('Report from a Symposium')]);
+    assert.equal(merged[0]!.needsReview, true, 'mergeInstruments sets the flag');
+    assert.equal(confirmedInstruments(merged).length, 0);
+  });
 
   const oaSaysHere = { authorId: 'A1', lastKnown: [IITB], affiliations: [{ ...IITB, years: [2025] }] };
   const oaSaysElsewhere = { authorId: 'A1', lastKnown: [NUS], affiliations: [{ ...NUS, years: [2026] }, { ...IITB, years: [2024] }] };
@@ -976,14 +1093,54 @@ async function main(): Promise<void> {
     assert.equal(a.affiliation.lastSeenYear, 2024);
   });
 
-  await check('ORCID open employment elsewhere but OpenAlex has a NEWER paper here → ORCID is stale, stays current', async () => {
+  await check('ORCID open employment only elsewhere but a NEWER paper names the institute → conflict (needs review), institute kept', async () => {
+    // Either ORCID is stale or the OpenAlex record is a different person with the same name;
+    // the stored data had 53 such cases, many of them postdocs elsewhere or namesakes.
     const a = combineAffiliationEvidence(atIITB, {
       openalex: { authorId: 'A1', lastKnown: [IITB], affiliations: [{ ...IITB, years: [2026] }] },
       orcid: { orcid: 'x', employments: [{ organization: 'Old University', current: true, startYear: 2012 }] },
     }, NOW);
-    assert.equal(a.status, 'current');
-    assert.equal(a.affiliation.source, 'openalex');
+    assert.equal(a.status, 'conflict');
+    assert.equal(a.affiliation.source, 'orcid');
+    assert.equal(a.institution.name, atIITB.institutionName, 'a conflict keeps the institute');
+    assert.match(a.affiliation.note ?? '', /Old University/);
     assert.ok(a.affiliation.evidence?.some((e) => e.source === 'orcid'), 'ORCID evidence should still be recorded');
+    assert.equal(affiliationPatch({ institution: { name: atIITB.institutionName } } as never, a).unset.includes('institution.department'), false, 'a conflict keeps the department');
+  });
+
+  await check('ORCID open employment AT the institute alongside one elsewhere → current, no conflict', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: { authorId: 'A1', lastKnown: [IITB], affiliations: [{ ...IITB, years: [2026] }] },
+      orcid: { orcid: 'x', employments: [
+        { organization: 'Old University', current: true, startYear: 2012 },
+        { organization: 'Indian Institute of Technology Bombay', current: true, startYear: 2018 },
+      ] },
+    }, NOW);
+    assert.equal(a.status, 'current');
+  });
+
+  await check('an ORCID employment filed under an umbrella organisation but naming the institute ("CARE, IIT Bombay") counts as here', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: { authorId: 'A1', lastKnown: [IITB], affiliations: [{ ...IITB, years: [2026] }] },
+      orcid: { orcid: 'x', employments: [{ organization: 'Education and Research Network', role: 'Professor', department: 'CARE, IIT Bombay', current: true, startYear: 2019 }] },
+    }, NOW);
+    assert.equal(a.status, 'current');
+  });
+
+  await check('a latest work listing more than 8 institutions (merged namesakes) → conflict, not current', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ id: `I9${i}`, name: `Some University ${i}` }));
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: { authorId: 'A1', lastKnown: [...many, IITB], affiliations: [{ ...IITB, years: [2026] }] },
+    }, NOW);
+    assert.equal(a.status, 'conflict');
+    assert.match(a.affiliation.note ?? '', /13 institutions/);
+  });
+
+  await check('a latest work with a few co-affiliations is still current', async () => {
+    const a = combineAffiliationEvidence(atIITB, {
+      openalex: { authorId: 'A1', lastKnown: [{ id: 'I91', name: 'Monash University' }, IITB], affiliations: [{ ...IITB, years: [2026] }] },
+    }, NOW);
+    assert.equal(a.status, 'current');
   });
 
   await check('nothing but OpenAlex → the OpenAlex rule, with "not in directory" appended when the directory dropped them', async () => {
@@ -1390,6 +1547,8 @@ async function main(): Promise<void> {
   // --- Faculty roster -------------------------------------------------------
   const { runRosterTests } = await import('./rosterTests.js');
   await runRosterTests(check, request);
+  const { runFlowTests } = await import('./flowTests.js');
+  await runFlowTests(check, request);
 
   // --- Teardown -----------------------------------------------------------
   server.close();

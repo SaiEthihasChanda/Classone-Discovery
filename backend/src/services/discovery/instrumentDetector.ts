@@ -117,10 +117,42 @@ export function detectInstrumentsInText(
 }
 
 /**
+ * Electrochemistry vocabulary for paper titles. Deliberately generic (techniques, devices, fields),
+ * so it is not tuned to any particular set of papers.
+ */
+const ELECTROCHEM_TITLE =
+  /electro|batter|supercapac|fuel cell|sensor|biosens|corros|catal|photoanode|photocathode|photo-?electr|anode|cathode|electrolyte|redox|voltamm|impedance|solar cell|water splitting|oxygen evolution|hydrogen|lithium|sodium|li-ion|na-ion/i;
+
+/** The paper title inside a full-text-search evidence line (`Full text of "<title>" … mentions …`). */
+function evidenceTitle(evidence: string): string | null {
+  return /Full text of "(.+?)"(?: \(\d{4}\))?(?: and \d+ more)? mentions/.exec(evidence)?.[1] ?? null;
+}
+
+/**
+ * Whether a sighting should be checked by a person before it counts as ownership.
+ *
+ * Measured on the stored detections (Oct 2026): every false positive was a full-text-search hit on a
+ * bare brand name in a paper that is not electrochemistry — a symposium report, a biology paper, a
+ * civil-engineering paper. A named model number, a sentence we matched ourselves, or an
+ * electrochemical title clears it.
+ */
+export function instrumentNeedsReview(i: DetectedInstrument): boolean {
+  if (i.model || i.matchedVia === 'text_match') return false;
+  const title = evidenceTitle(i.evidence);
+  return !(title && ELECTROCHEM_TITLE.test(title));
+}
+
+/** Sightings that count as evidence of ownership (scoring, promotion, the sweep's admissions). */
+export function confirmedInstruments<T extends DetectedInstrument>(list: T[] | undefined): T[] {
+  return (list ?? []).filter((i) => !instrumentNeedsReview(i));
+}
+
+/**
  * Merges instrument sightings, dropping duplicates of the same brand+model.
  *
  * A text match with a model beats a search-only hit for the same brand, so
- * when both exist for one brand the model-less entry is dropped.
+ * when both exist for one brand the model-less entry is dropped. Every
+ * returned sighting carries a fresh `needsReview` flag.
  */
 export function mergeInstruments(
   ...lists: Array<DetectedInstrument[] | undefined>
@@ -139,7 +171,11 @@ export function mergeInstruments(
 
   return merged
     .filter((i) => i.model || !brandsWithModel.has(i.brandKey))
-    .slice(0, 12);
+    .slice(0, 12)
+    .map((i) => {
+      const { needsReview: _stale, ...rest } = i;
+      return instrumentNeedsReview(i) ? { ...rest, needsReview: true } : rest;
+    });
 }
 
 /** Runs text detection over everything we hold on a candidate and merges it in. */

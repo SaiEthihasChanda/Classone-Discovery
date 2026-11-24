@@ -109,8 +109,32 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(idx.find('Rahul Verma'), 'verma-1');
     idx.add('Ritu Verma', 'verma-2');
     assert.equal(idx.find('R. Verma'), undefined, 'two R. Vermas — no guess');
+    idx.add('Satinder Kumar Sharma', 'satinder');
+    idx.add('Swati Sharma', 'swati');
+    assert.equal(idx.find('Satinder Sharma'), 'satinder', 'a dropped middle name still matches the one candidate on every key');
+    assert.equal(idx.find('S. Sharma'), undefined, 'an initial alone still never picks between two');
     assert.equal(shortInstitutionNames('Indian Institute of Technology Bombay')[0], 'IIT Bombay');
     assert.equal(shortInstitutionNames('National Institute of Technology Karnataka')[0], 'NIT Karnataka');
+  });
+
+  await check("Bhubaneswar / Bhubaneshwar: both spellings searched, and compare equal", async () => {
+    const { placeSpellings } = await import('../services/roster/rosterBuilder.js');
+    const { instKey } = await import('../services/leads/affiliationService.js');
+    assert.deepEqual(placeSpellings('IIT Bhubaneswar'), ['IIT Bhubaneshwar']);
+    assert.deepEqual(placeSpellings('Indian Institute of Technology Patna'), []);
+    assert.equal(instKey('Indian Institute of Technology Bhubaneshwar'), instKey('IIT Bhubaneswar'));
+  });
+
+  await check('IIT BHU and IIT Bhubaneswar are different institutes (whole-word key matching)', async () => {
+    const { keyContains } = await import('../utils/normalize.js');
+    const { instKey } = await import('../services/leads/affiliationService.js');
+    const bhu = instKey('Indian Institute of Technology BHU')!;
+    const bbs = instKey('Indian Institute of Technology Bhubaneswar')!;
+    assert.equal(keyContains(bbs, bhu), false);
+    const { isGenericInstitutionName } = await import('../services/roster/rosterBuilder.js');
+    for (const g of ['IIT', 'NIT', 'IIIT', 'Indian Institute of Technology']) assert.equal(isGenericInstitutionName(g), true, g);
+    for (const s of ['IIT Jammu', 'IITD', 'IIT KGP', 'IIT-RPR']) assert.equal(isGenericInstitutionName(s), false, s);
+    assert.equal(keyContains(instKey('Department of Chemistry, IIT Bombay')!, instKey('IIT Bombay')!), true);
   });
 
   // -------------------------------------------------------------------------
@@ -357,6 +381,53 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(iyer!.relevance.score, 0, 'no ids, no evidence → scored 0, not left unscored');
   });
 
+  await check('an "only these areas" run skips members whose topics fall outside every area — no works call, no credit', async () => {
+    const { estimateScoreCost } = await import('../services/roster/rosterRelevance.js');
+    const mk = (name: string, authorId: string, topics: string[]) =>
+      repositories.faculty.create({
+        status: 'eligible',
+        person: { name, normalizedNameKey: name.toLowerCase(), openAlexAuthorId: authorId },
+        role: { category: 'professor' },
+        department: { name: 'Chemistry', domain: 'chemistry' },
+        institution: { name: 'Indian Institute of Technology Bombay', discoveredName: 'Indian Institute of Technology Bombay', discoveredOpenAlexId: 'I999FOCUS' },
+        sources: [],
+        research: { topics, recentPublications: [], instruments: [] },
+        relevance: {},
+        tags: [],
+      } as never);
+    await mk('Focus Battery', 'A9100000001', ['Advanced Battery Technologies Research']);
+    await mk('Focus Outside', 'A9100000002', ['Sports Analytics', 'Microgrid Control and Optimization']);
+    await mk('Focus Unknown', 'A9100000003', []);
+    const focus = { items: ['Battery testing, fuel cells & solar cells'], as: 'applicationAreas' as const, mode: 'only' as const };
+    const est = await estimateScoreCost({ institutionIds: ['I999FOCUS'], focus });
+    assert.equal(est.outsideAreas, 1);
+    assert.equal(est.credits, 2, 'only the in-area member and the one with no topics yet cost a credit');
+    const called: string[] = [];
+    const result = await scoreRoster({ institutionIds: ['I999FOCUS'], focus }, noopCtx(), {
+      provider: new HeuristicProvider(),
+      recentWorks: async ({ authorId }: { authorId: string }) => {
+        called.push(authorId);
+        return { publications: [{ title: 'Lithium battery anodes', year: 2025 }], topics: ['Advanced Battery Technologies Research'], evidenceText: 'battery' };
+      },
+      orcidWorks: async () => [],
+    });
+    assert.deepEqual(called.sort(), ['A9100000001', 'A9100000003'], 'the out-of-area member was never fetched');
+    assert.equal(result.outsideAreas, 1);
+    const outside = (await repositories.faculty.find({})).find((m) => m.person.name === 'Focus Outside');
+    assert.equal(outside!.relevance.score, undefined, 'left unscored, so a later run without the override can still score them');
+    const unknown = (await repositories.faculty.find({})).find((m) => m.person.name === 'Focus Unknown');
+    assert.deepEqual(unknown!.research.applicationAreas, ['Battery testing, fuel cells & solar cells'], 'tagged once scoring brought topics');
+    // Leave the roster as later checks expect it.
+    for (const m of (await repositories.faculty.find({})).filter((x) => x.institution.discoveredOpenAlexId === 'I999FOCUS')) await repositories.faculty.deleteById(m.id);
+  });
+
+  await check('build tags application areas from the OpenAlex topics it already has (free)', async () => {
+    const tagged = (await repositories.faculty.find({})).filter((m) => (m.research.applicationAreas ?? []).length > 0 && m.institution.discoveredOpenAlexId === IITB_ID);
+    const withTopics = (await repositories.faculty.find({})).filter((m) => m.institution.discoveredOpenAlexId === IITB_ID && m.research.topics.length > 0);
+    assert.ok(withTopics.length > 0);
+    assert.ok(tagged.length > 0, 'members built with electrochemistry topics carry an area');
+  });
+
   await check('sweepInstruments tags roster members seen in institute-wide brand queries and re-scores them', async () => {
     const { sweepInstruments } = await import('../services/roster/rosterSweep.js');
     const verma = await repositories.faculty.findSamePerson({ openAlexAuthorId: 'A5000000002', normalizedNameKey: '' });
@@ -534,6 +605,15 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.ok(twoStatuses.body.total > onlyEligible.body.total, 'multi-status returns more than one status');
     const byOrcid = await request('/roster?q=0000-0002-0001-0002');
     assert.equal(byOrcid.body.items[0]?.person.name, 'Anil Kumar', 'an ORCID typed into the box matches by substring');
+    // Prospects board: built outside a conveyor run, members are placed by the
+    // migration, and then every member sits in exactly one stage column.
+    const { migrateFlow } = await import('../services/pipeline/flowEngine.js');
+    await migrateFlow();
+    const stageTotals = await Promise.all(
+      ['found', 'verified', 'scored', 'filling', 'crm', 'excluded'].map(async (s) => (await request(`/roster?stage=${s}`)).body.total as number),
+    );
+    assert.equal(stageTotals.reduce((a, b) => a + b, 0), 8, `stages partition the roster: ${stageTotals.join('+')}`);
+    assert.equal(stageTotals[4], 1, 'In CRM = promoted');
     const summary = await request('/roster/summary');
     assert.equal(summary.body.total, 8);
     assert.equal(summary.body.byStatus.promoted, 1);
@@ -600,10 +680,17 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.ok(names.includes('Chemistry'), `sheets: ${names.join(', ')}`);
     const all = wb.getWorksheet('All')!;
     const total = (await request('/roster')).body.total as number;
-    assert.equal(all.rowCount - 1, total, 'All sheet holds every member');
-    assert.equal(String(all.getRow(1).getCell(1).value), 'Name');
-    const sumSplit = wb.worksheets.slice(1).reduce((n, w) => n + w.rowCount - 1, 0);
+    // Formatted layout: title, summary, legend and note above the header on row 6.
+    const HEADER = 6;
+    assert.equal(all.rowCount - HEADER, total, 'All sheet holds every member');
+    assert.equal(String(all.getRow(HEADER).getCell(1).value), 'Name');
+    assert.equal(String(all.getRow(HEADER).getCell(6).value), 'Current System Used');
+    const sumSplit = wb.worksheets.slice(1).reduce((n, w) => n + w.rowCount - HEADER, 0);
     assert.equal(sumSplit, total, 'domain is single-valued, so the split sheets add up to the total');
+    const full = new ExcelJS.Workbook();
+    await full.xlsx.load(await (await fetch('http://localhost:4999/api/roster/export.xlsx?layout=full')).arrayBuffer());
+    const fullHeader = (full.getWorksheet('All')!.getRow(HEADER).values as unknown[]).map(String);
+    assert.ok(fullHeader.includes('Funding agencies') && fullHeader.includes('Score reasoning'), 'the full layout keeps every column');
     const byBrand = new ExcelJS.Workbook();
     const r2 = await fetch('http://localhost:4999/api/roster/export.xlsx?splitBy=brand');
     await byBrand.xlsx.load(await r2.arrayBuffer());

@@ -27,6 +27,21 @@ const grantSchema = new Schema(
   { _id: false },
 );
 
+const fundingSchema = new Schema(
+  {
+    agency: { type: String, enum: ['serb', 'anrf', 'dst', 'dbt', 'icmr', 'csir', 'birac', 'other'], required: true },
+    funder: { type: String, required: true },
+    funderId: String,
+    awardId: String,
+    scheme: String,
+    year: Number,
+    papers: { type: Number, default: 1 },
+    workTitle: String,
+    workYear: Number,
+    workUrl: String,
+  },
+  { _id: false },
+);
 const instrumentSchema = new Schema(
   {
     brandKey: { type: String, required: true },
@@ -36,6 +51,7 @@ const instrumentSchema = new Schema(
     evidence: { type: String, required: true },
     sourceUrl: String,
     matchedVia: { type: String, enum: ['fulltext_search', 'text_match'], required: true },
+    needsReview: Boolean,
   },
   { _id: false },
 );
@@ -89,7 +105,7 @@ const leadSchema = new Schema(
       country: String,
       websiteUrl: String,
       affiliation: {
-        status: { type: String, enum: ['current', 'moved', 'unknown', 'unverified'] },
+        status: { type: String, enum: ['current', 'moved', 'unknown', 'unverified', 'conflict'] },
         verifiedAt: Date,
         source: String,
         evidence: {
@@ -124,6 +140,9 @@ const leadSchema = new Schema(
       recentPublications: { type: [publicationSchema], default: [] },
       recentGrants: { type: [grantSchema], default: [] },
       instruments: { type: [instrumentSchema], default: [] },
+      funding: { type: [fundingSchema], default: undefined },
+      fundingCheckedAt: Date,
+      applicationAreas: { type: [String], default: undefined },
       webEnrichedAt: Date,
     },
 
@@ -155,6 +174,9 @@ const leadSchema = new Schema(
       default: 'not_started',
     },
     activeThreadId: String,
+
+    /** Promoted by the Prospects conveyor but still filling contact info — hidden from Leads until done. */
+    inPipeline: { type: Boolean, index: true },
 
     tags: { type: [String], default: [] },
   },

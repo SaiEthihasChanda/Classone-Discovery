@@ -35,7 +35,7 @@ from ..scrapers.faculty_scraper import extract_emails_from_page, parse_faculty_p
 from ..scrapers.paper_text import fetch_paper, methods_section
 from ..scrapers.registries import search_registry
 from ..scrapers.static_fetcher import FetchError, fetch_page
-from ..scrapers.tiered_fetcher import fetch_with_escalation
+from ..scrapers.tiered_fetcher import fetch_rendered, fetch_with_escalation
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
@@ -78,7 +78,7 @@ async def enrich_lead(request: EnrichLeadRequest) -> EnrichLeadResponse:
         for s in extract_snippets(text, request.instrument_terms):
             out.snippets.append(TextSnippet(url=url, text=s))
 
-    async def fetch(url: str, *, escalate: bool = False) -> str | None:
+    async def fetch(url: str, *, escalate: bool = False, rendered: bool = False) -> str | None:
         nonlocal budget
         if budget <= 0:
             return None
@@ -87,9 +87,14 @@ async def enrich_lead(request: EnrichLeadRequest) -> EnrichLeadResponse:
         try:
             if escalate:
                 outcome = await fetch_with_escalation(
-                    url, opts.timeout_sec_per_page, allow_browser=opts.allow_browser, allow_proxy=False
+                    url,
+                    opts.timeout_sec_per_page,
+                    allow_browser=opts.allow_browser,
+                    allow_proxy=False,
                 )
                 return outcome.html
+            if rendered:
+                return await fetch_rendered(url, opts.timeout_sec_per_page, allow_browser=opts.allow_browser)
             return await fetch_page(url, opts.timeout_sec_per_page)
         except Exception as exc:  # noqa: BLE001 - reported, never fatal
             out.errors.append(_error(url, exc))
@@ -130,7 +135,8 @@ async def enrich_lead(request: EnrichLeadRequest) -> EnrichLeadResponse:
     websites: list[str] = []
 
     if profile_url:
-        html = await fetch(profile_url)
+        # Script-built profile pages (IIT Jammu's) are an empty shell over plain HTTP.
+        html = await fetch(profile_url, rendered=True)
         if html:
             out.profile_url = profile_url
             contact = extract_contact(html, request.name, profile_url)

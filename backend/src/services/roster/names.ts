@@ -67,9 +67,13 @@ export class NameIndex<T> {
     const keys = nameKeys(name);
     const exact = keys.full ? this.byFull.get(keys.full) : undefined;
     if (exact && exact.length >= 1) return exact[0];
-    const hits = new Set<T>();
-    for (const s of keys.short) for (const item of this.byShort.get(s) ?? []) hits.add(item);
-    return hits.size === 1 ? [...hits][0] : undefined;
+    const hits = new Map<T, number>();
+    for (const s of keys.short) for (const item of this.byShort.get(s) ?? []) hits.set(item, (hits.get(item) ?? 0) + 1);
+    if (hits.size === 1) return [...hits.keys()][0];
+    // "Satinder Sharma" hits Swati Sharma on "s sharma" alone, but Satinder Kumar
+    // Sharma on both "s sharma" and "s satinder": one candidate matching every key wins.
+    const full = [...hits].filter(([, n]) => n === keys.short.length);
+    return keys.short.length >= 2 && full.length === 1 ? full[0]![0] : undefined;
   }
 
   private push(map: Map<string, T[]>, key: string, item: T): void {

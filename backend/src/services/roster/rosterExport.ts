@@ -10,6 +10,9 @@
 import ExcelJS from 'exceljs';
 import type { FacultyMember } from '../../types/domain.js';
 import { DOMAIN_LABELS } from './domains.js';
+import { addRosterSheet, instituteDomains, shortInstitute, type ExportLayout } from './rosterExcel.js';
+import { confirmedInstruments, instrumentNeedsReview } from '../discovery/instrumentDetector.js';
+import { AGENCY_LABEL, agenciesIn, fundingLine, latestGrantYear } from '../funding/fundingAgencies.js';
 
 export type Cell = string | number | undefined | null;
 
@@ -20,6 +23,8 @@ export interface ExportColumn {
 
 const brands = (m: FacultyMember) => [...new Set(m.research.instruments.map((i) => i.brand))];
 const models = (m: FacultyMember) => [...new Set(m.research.instruments.filter((i) => i.model).map((i) => `${i.brand} ${i.model}`))];
+/** Sightings still needing review (a bare brand in a paper that is not electrochemistry), as 'Brand (paper evidence)'. */
+const toReview = (m: FacultyMember) => m.research.instruments.filter((i) => instrumentNeedsReview(i)).map((i) => `${i.brand}: ${i.evidence}`);
 const sources = (m: FacultyMember) => [...new Set(m.sources.map((s) => s.type))];
 
 export const ROSTER_COLUMNS: ExportColumn[] = [
@@ -34,6 +39,7 @@ export const ROSTER_COLUMNS: ExportColumn[] = [
   { header: 'Affiliation source', value: (m) => m.institution.affiliation?.source },
   { header: 'Affiliation checked', value: (m) => (m.institution.affiliation?.verifiedAt ? new Date(m.institution.affiliation.verifiedAt).toISOString().slice(0, 10) : undefined) },
   { header: 'Previous institution', value: (m) => m.institution.affiliation?.previousInstitution },
+  { header: 'Affiliation note', value: (m) => m.institution.affiliation?.note },
   { header: 'Outside target list', value: (m) => (m.institution.outsideTarget ? 'yes' : '') },
   { header: 'Email', value: (m) => m.person.email },
   { header: 'Phone', value: (m) => m.person.phone },
@@ -44,7 +50,11 @@ export const ROSTER_COLUMNS: ExportColumn[] = [
   { header: 'Relevance', value: (m) => m.relevance.score },
   { header: 'Instrument brands', value: (m) => brands(m).join('; ') },
   { header: 'Instrument models', value: (m) => models(m).join('; ') },
-  { header: 'Class One customer', value: (m) => (m.research.instruments.some((i) => i.vendor === 'classone') ? 'yes' : '') },
+  { header: 'Class One customer', value: (m) => (confirmedInstruments(m.research.instruments).some((i) => i.vendor === 'classone') ? 'yes' : '') },
+  { header: 'Instruments to review', value: (m) => toReview(m).join('; ') },
+  { header: 'Funding agencies', value: (m) => agenciesIn(m.research.funding).map((a) => AGENCY_LABEL[a]).join('; ') },
+  { header: 'Latest grant year', value: (m) => latestGrantYear(m.research.funding) },
+  { header: 'Grants (paper acknowledgements)', value: (m) => (m.research.funding ?? []).filter((f) => f.agency !== 'other').map(fundingLine).join('; ') },
   { header: 'Topics', value: (m) => m.research.topics.slice(0, 8).join('; ') },
   { header: 'Works', value: (m) => m.research.worksCount },
   { header: 'h-index', value: (m) => m.research.hIndex },
@@ -85,12 +95,19 @@ export const SPLIT_OPTIONS: Record<string, { label: string; keys: (m: FacultyMem
   status: { label: 'Roster status', keys: (m) => [m.status] },
   affiliation: { label: 'Affiliation status', keys: (m) => [m.institution.affiliation?.status ?? 'unverified'] },
   brand: { label: 'Instrument brand', keys: (m) => (brands(m).length ? brands(m) : ['(no instrument)']) },
+  funder: {
+    label: 'Funding agency',
+    keys: (m) => {
+      const a = agenciesIn(m.research.funding).map((k) => AGENCY_LABEL[k]);
+      return a.length ? a : [m.research.fundingCheckedAt ? '(none acknowledged)' : '(not checked)'];
+    },
+  },
   vendor: {
     label: 'Class One customer / competitor / none',
     keys: (m) =>
-      m.research.instruments.some((i) => i.vendor === 'classone')
+      confirmedInstruments(m.research.instruments).some((i) => i.vendor === 'classone')
         ? ['Class One customer']
-        : m.research.instruments.length
+        : confirmedInstruments(m.research.instruments).length
           ? ['Competitor owner']
           : ['No instrument found'],
   },
@@ -135,36 +152,18 @@ function sheetName(raw: string, used: Set<string>): string {
   return name;
 }
 
-function addSheet(wb: ExcelJS.Workbook, name: string, members: FacultyMember[]): void {
-  const ws = wb.addWorksheet(name, { views: [{ state: 'frozen', ySplit: 1 }] });
-  ws.columns = ROSTER_COLUMNS.map((c) => ({ header: c.header, key: c.header, width: Math.min(60, Math.max(12, c.header.length + 2)) }));
-  for (const m of members) {
-    const row: Record<string, Cell> = {};
-    for (const c of ROSTER_COLUMNS) row[c.header] = c.value(m) ?? '';
-    ws.addRow(row);
-  }
-  ws.getRow(1).font = { bold: true };
-  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ROSTER_COLUMNS.length } };
-  // Widen text-heavy columns from their content, within reason.
-  for (const col of ws.columns) {
-    let width = Number(col.width ?? 12);
-    col.eachCell?.({ includeEmpty: false }, (cell) => {
-      width = Math.max(width, Math.min(60, String(cell.value ?? '').length + 2));
-    });
-    col.width = width;
-  }
-}
-
 /**
- * The workbook: one "All" sheet always, then — when `splitBy` names a
- * `SPLIT_OPTIONS` key — one sheet per distinct value, largest first.
+ * The workbook: one "All" sheet always, then — when `splitBy` names a `SPLIT_OPTIONS` key — one sheet
+ * per distinct value, largest first. Every sheet is formatted for sending (see rosterExcel.ts);
+ * `layout` picks the six presentable columns (default) or every column.
  */
-export async function rosterToXlsx(members: FacultyMember[], splitBy?: string): Promise<Buffer> {
+export async function rosterToXlsx(members: FacultyMember[], splitBy?: string, layout: ExportLayout = 'presentable'): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Class One Systems';
   wb.created = new Date();
   const used = new Set<string>();
-  addSheet(wb, sheetName('All', used), members);
+  const domains = instituteDomains(members);
+  addRosterSheet(wb, sheetName('All', used), members, layout, domains);
 
   const split = splitBy ? SPLIT_OPTIONS[splitBy] : undefined;
   if (split) {
@@ -177,13 +176,12 @@ export async function rosterToXlsx(members: FacultyMember[], splitBy?: string): 
       }
     }
     const ordered = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
-    for (const [key, list] of ordered) addSheet(wb, sheetName(key, used), list);
+    for (const [key, list] of ordered) addRosterSheet(wb, sheetName(splitBy === 'institute' ? shortInstitute(key) : key, used), list, layout, domains);
   }
 
   const out = await wb.xlsx.writeBuffer();
   return Buffer.from(out as ArrayBuffer);
 }
-
 /** A safe download filename: the user's text, or a dated default. */
 export function exportFilename(requested: string | undefined, ext: 'csv' | 'xlsx'): string {
   const base = (requested ?? '').replace(/\.(csv|xlsx)$/i, '').replace(/[^\w\- .()]+/g, '_').trim().slice(0, 80);

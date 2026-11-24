@@ -125,13 +125,20 @@ export async function scrapeNewsPages(
 }
 
 /** True if the scraper service is up. Lets discovery skip scrape sources cleanly. */
+/**
+ * Three attempts ~2 s apart: a scraper that is still booting (`npm run dev` starts it alongside the
+ * backend) or briefly busy rendering a page must not be reported as down for a whole run.
+ */
 export async function isScraperAvailable(): Promise<boolean> {
-  try {
-    await fetchJson(`${env.SCRAPER_SERVICE_URL}/health`, { timeoutMs: 3000, retries: 0 });
-    return true;
-  } catch {
-    return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await fetchJson(`${env.SCRAPER_SERVICE_URL}/health`, { timeoutMs: 3000, retries: 0 });
+      return true;
+    } catch {
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
+    }
   }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +369,8 @@ export interface VidwanSearchResponse {
   rows: VidwanRow[];
   listing_profiles: number;
   site_total?: number | null;
+  /** Vidwan Organisation-filter values the search was narrowed to; empty when only free text matched. */
+  organisations?: string[];
   pages_fetched: number;
   profiles_fetched?: number;
   requests: number;

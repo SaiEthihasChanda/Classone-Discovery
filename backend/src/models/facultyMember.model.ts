@@ -11,6 +11,21 @@ const publicationSchema = new Schema(
   { _id: false },
 );
 
+const fundingSchema = new Schema(
+  {
+    agency: { type: String, enum: ['serb', 'anrf', 'dst', 'dbt', 'icmr', 'csir', 'birac', 'other'], required: true },
+    funder: { type: String, required: true },
+    funderId: String,
+    awardId: String,
+    scheme: String,
+    year: Number,
+    papers: { type: Number, default: 1 },
+    workTitle: String,
+    workYear: Number,
+    workUrl: String,
+  },
+  { _id: false },
+);
 const instrumentSchema = new Schema(
   {
     brandKey: { type: String, required: true },
@@ -20,6 +35,7 @@ const instrumentSchema = new Schema(
     evidence: { type: String, required: true },
     sourceUrl: String,
     matchedVia: { type: String, enum: ['fulltext_search', 'text_match'], required: true },
+    needsReview: Boolean,
   },
   { _id: false },
 );
@@ -102,7 +118,7 @@ const facultyMemberSchema = new Schema(
       websiteUrl: String,
       outsideTarget: Boolean,
       affiliation: {
-        status: { type: String, enum: ['current', 'moved', 'unknown', 'unverified'] },
+        status: { type: String, enum: ['current', 'moved', 'unknown', 'unverified', 'conflict'] },
         verifiedAt: Date,
         source: String,
         evidence: [evidenceSchema],
@@ -125,6 +141,9 @@ const facultyMemberSchema = new Schema(
       recentPublications: { type: [publicationSchema], default: [] },
       evidenceText: String,
       instruments: { type: [instrumentSchema], default: [] },
+      funding: { type: [fundingSchema], default: undefined },
+      fundingCheckedAt: Date,
+      applicationAreas: { type: [String], default: undefined },
     },
 
     relevance: {
@@ -138,11 +157,35 @@ const facultyMemberSchema = new Schema(
     leadId: String,
     promotedAt: Date,
     tags: { type: [String], default: [] },
+
+    /**
+     * Where this person is on the Prospects conveyor (see services/pipeline/flowEngine.ts).
+     * idle = waiting (Auto picks it up; Manual waits for a person) · queued = a person asked
+     * for this step · processing · review = needs a human · failed = gave up after retries.
+     */
+    flow: {
+      // No defaults on purpose: a member created outside a conveyor run (import,
+      // the batch endpoints) has no flow yet, and flowEngine.migrateFlow places
+      // them from what is already known (a promoted import belongs in Leads, not Found).
+      stage: { type: String, enum: ['verify', 'score', 'promote', 'fill', 'done'] },
+      state: { type: String, enum: ['idle', 'queued', 'processing', 'review', 'failed'] },
+      /** Set by "Run next step" — e.g. promote even below the threshold. */
+      forced: Boolean,
+      attempts: Number,
+      nextAttemptAt: Date,
+      lastError: String,
+      note: String,
+      startedAt: Date,
+      updatedAt: Date,
+      runId: String,
+    },
   },
   { timestamps: true, collection: 'faculty', minimize: false },
 );
 
 facultyMemberSchema.index({ 'person.normalizedNameKey': 1, 'institution.discoveredOpenAlexId': 1 });
 facultyMemberSchema.index({ status: 1, 'relevance.score': -1 });
+facultyMemberSchema.index({ 'flow.stage': 1, 'flow.state': 1, 'flow.nextAttemptAt': 1 });
+facultyMemberSchema.index({ 'flow.runId': 1 });
 
 export const FacultyMemberModel = model('FacultyMember', facultyMemberSchema);

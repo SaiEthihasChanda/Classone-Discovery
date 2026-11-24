@@ -12,8 +12,30 @@
  * the database as it goes and is safe to re-run; it picks up where it stopped.
  */
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { recordRunFinish, recordRunLog, recordRunProgress, recordRunStart } from './rosterRunStore.js';
 
-export type JobKind = 'roster_build' | 'roster_verify' | 'roster_score' | 'roster_sweep' | 'roster_promote' | 'roster_fill';
+/**
+ * Every log line a job produces is also appended to a file on disk, in full —
+ * the in-memory tail kept on the job (`MAX_LOG_LINES`) is only what the UI
+ * needs to show live; a roster build or a multi-institute pipeline run easily
+ * produces more lines than is sensible to hold in memory for every job the
+ * process has ever run, and a finished job's in-memory record is pruned
+ * (`KEEP_FINISHED`) while the file is not.
+ */
+const LOG_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../logs/jobs');
+try {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+} catch {
+  // Best effort — a job still runs and shows its live tail without disk logging.
+}
+export function jobLogPath(id: string): string {
+  return path.join(LOG_DIR, `${id}.log`);
+}
+
+export type JobKind = 'roster_build' | 'roster_verify' | 'roster_score' | 'roster_sweep' | 'roster_promote' | 'roster_fill' | 'roster_pipeline';
 
 export type JobStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -34,6 +56,8 @@ export interface JobState<TResult = unknown> {
   /** 0..1 when the job can estimate it. */
   progress?: number;
   log: JobLogLine[];
+  /** Every line ever logged, including ones dropped from the in-memory tail above. */
+  logLineCount: number;
   result?: TResult;
   error?: string;
   startedAt: Date;
@@ -61,7 +85,14 @@ export class JobCancelledError extends Error {
   }
 }
 
-const MAX_LOG_LINES = 400;
+/**
+ * In-memory tail kept per job, for the live view and for polling — the file
+ * on disk (`jobLogPath`) is never truncated and has every line the job ever
+ * logged, however many that is. Kept modest here because the Faculty page
+ * polls the running job's full record every 2.5s; the on-disk log is what
+ * "every detail" actually means for a run of any real size.
+ */
+const MAX_LOG_LINES = 800;
 const KEEP_FINISHED = 20;
 
 const jobs = new Map<string, JobState>();
@@ -71,8 +102,13 @@ function running(kind: JobKind): JobState | undefined {
   return undefined;
 }
 
-/** Starts a job unless one of the same kind is already running. Returns the state immediately. */
-export function startJob<TResult>(kind: JobKind, body: (ctx: JobContext) => Promise<TResult>): JobState<TResult> {
+/**
+ * Starts a job unless one of the same kind is already running. Returns the
+ * state immediately. `requestOptions` is recorded verbatim on the durable run
+ * record (`RosterRunModel.options`) purely for the history page to show what
+ * was asked for — it plays no role in running the job.
+ */
+export function startJob<TResult>(kind: JobKind, body: (ctx: JobContext) => Promise<TResult>, requestOptions?: unknown): JobState<TResult> {
   const already = running(kind);
   if (already) {
     throw new Error(`A ${kind.replace('_', ' ')} job is already running (started ${already.startedAt.toISOString()}). Wait for it or cancel it first.`);
@@ -85,21 +121,40 @@ export function startJob<TResult>(kind: JobKind, body: (ctx: JobContext) => Prom
     counters: {},
     stage: 'starting',
     log: [],
+    logLineCount: 0,
     startedAt: new Date(),
     cancelRequested: false,
   };
   jobs.set(state.id, state as JobState);
   pruneFinished();
+  recordRunStart(state.id, kind, requestOptions);
+
+  let logStream: fs.WriteStream | null = null;
+  try {
+    logStream = fs.createWriteStream(jobLogPath(state.id), { flags: 'a' });
+  } catch {
+    // Disk logging is a bonus; the in-memory tail still works without it.
+  }
+  logStream?.write(`${new Date().toISOString()}  [${kind}] job ${state.id} started\n`);
 
   const ctx: JobContext = {
     id: state.id,
     log: (message, level = 'info') => {
-      state.log.push({ at: new Date(), message, level });
+      const at = new Date();
+      state.log.push({ at, message, level });
       if (state.log.length > MAX_LOG_LINES) state.log.splice(0, state.log.length - MAX_LOG_LINES);
+      state.logLineCount += 1;
+      logStream?.write(`${at.toISOString()} ${level.padEnd(5)} ${message}\n`);
+      recordRunLog(state.id, state.logLineCount, { at, message, level });
     },
     setStage: (stage, progress) => {
       state.stage = stage;
       if (progress !== undefined) state.progress = Math.max(0, Math.min(1, progress));
+      // setStage is already called sparingly by the stage code (every N items,
+      // not every item) — piggybacking the counters snapshot on it here, rather
+      // than on every count()/set() call, keeps this at that same cadence
+      // instead of writing to Mongo on every single counter increment.
+      recordRunProgress(state.id, { stage, progress: state.progress, counters: state.counters });
     },
     count: (name, by = 1) => {
       state.counters[name] = (state.counters[name] ?? 0) + by;
@@ -133,6 +188,10 @@ export function startJob<TResult>(kind: JobKind, body: (ctx: JobContext) => Prom
       state.error = error instanceof Error ? error.message : String(error);
       state.stage = 'failed';
       ctx.log(state.error, 'error');
+    })
+    .finally(() => {
+      logStream?.end(`${new Date().toISOString()}  job ${state.status} (${state.logLineCount} lines total)\n`);
+      recordRunFinish(state.id, { status: state.status, result: state.result, error: state.error, logLineCount: state.logLineCount, counters: state.counters });
     });
 
   return state;

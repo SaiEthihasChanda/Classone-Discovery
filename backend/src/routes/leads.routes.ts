@@ -8,6 +8,9 @@ import { leadsToCsv } from '../services/leads/leadCsv.js';
 import { estimateScanCredits, scanLeadInstruments } from '../services/discovery/instrumentScan.js';
 import { enrichLeadFromWeb, enrichLeadsFromWeb } from '../services/leads/webEnrichment.js';
 import { verifyAffiliations, verifyLeadAffiliation } from '../services/leads/affiliationService.js';
+import { backfillLeadFromGemini } from '../services/ai/geminiBackfillProvider.js';
+import { getBackfillUsage } from '../integrations/geminiBackfillBudget.js';
+import { draftOutreachForLead } from '../services/email/outreachService.js';
 import type { Lead } from '../types/domain.js';
 
 export const leadsRouter = Router();
@@ -58,7 +61,8 @@ type FilterQuery = z.infer<typeof filterQuerySchema>;
 
 /** One place turns the URL filters into a repository query, so list and export cannot drift. */
 function buildLeadQuery(q: FilterQuery): Omit<Query, 'options'> {
-  const filter: Filter = [];
+  // Leads still on the Prospects conveyor (filling info) aren't ready for review yet.
+  const filter: Filter = [where.ne('inPipeline', true)];
   if (q.status) filter.push(where.eq('status', q.status));
   if (q.source) filter.push(where.eq('source.type', q.source));
   if (q.minScore !== undefined) {
@@ -228,6 +232,18 @@ leadsRouter.get(
 );
 
 /**
+ * GET /api/leads/backfill-ai/usage — this month's Gemini web-search backfill
+ * usage, so the UI can say the real cost before anyone clicks the button
+ * (same "say it before you run it" rule `scan-instruments/estimate` follows).
+ */
+leadsRouter.get(
+  '/backfill-ai/usage',
+  asyncHandler(async (_req, res) => {
+    res.json(await getBackfillUsage());
+  }),
+);
+
+/**
  * POST /api/leads/:id/scan-instruments — every instrument this researcher
  * has written up, from their own papers rather than the run's sample of them.
  */
@@ -310,6 +326,30 @@ leadsRouter.post(
   '/:id/enrich-web',
   asyncHandler(async (req, res) => {
     res.json(await enrichLeadFromWeb(req.params.id!));
+  }),
+);
+
+/**
+ * POST /api/leads/:id/backfill-ai — Gemini web-search backfill for one lead.
+ * Costs real money once past Google's free monthly search allowance (see
+ * GET /backfill-ai/usage) — this is the explicit, single-lead opt-in; the
+ * roster-wide pass is `fillRoster({ useGeminiBackfill: true })`.
+ */
+leadsRouter.post(
+  '/:id/backfill-ai',
+  asyncHandler(async (req, res) => {
+    res.json(await backfillLeadFromGemini(req.params.id!));
+  }),
+);
+
+/**
+ * POST /api/leads/:id/draft-outreach — drafts (or refreshes) this lead's next
+ * outreach message. Never sends — approve it via POST /api/threads/:id/approve-send.
+ */
+leadsRouter.post(
+  '/:id/draft-outreach',
+  asyncHandler(async (req, res) => {
+    res.json(await draftOutreachForLead(req.params.id!));
   }),
 );
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=Classone-Discovery API (Node)
+After=network-online.target mongod.service classone-scraper.service
+Wants=network-online.target
+Requires=mongod.service
+
+[Service]
+User=classone
+WorkingDirectory=/opt/classone/app/backend
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+# Pipeline jobs run inside this process; give a running stage time to stop cleanly on restart.
+TimeoutStopSec=30
+MemoryMax=1200M
+
+[Install]
+WantedBy=multi-user.target

@@ -30,7 +30,7 @@ import {
 } from '../../integrations/scraperServiceClient.js';
 import { getOpenAccessLocation, type OpenAccessLocation } from '../../integrations/openAlexClient.js';
 import type { Lead, LeadInstrument } from '../../types/domain.js';
-import { normalizeInstitutionKey } from '../../utils/normalize.js';
+import { keyContains, normalizeInstitutionKey } from '../../utils/normalize.js';
 import { logActivity } from '../activity/activityService.js';
 import { detectInstrumentsInText, mergeInstruments } from '../discovery/instrumentDetector.js';
 import { brandSearchTerms, modelsToIdentify } from '../discovery/keywords.js';
@@ -58,7 +58,7 @@ export interface WebEnrichmentResult {
   errors: string[];
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Role addresses that belong to an office, never a person. */
 const GENERIC_EMAIL_PREFIXES = [
@@ -112,7 +112,7 @@ function directoryUrlsFor(lead: Lead, settings: AppSettings): string[] {
     .filter((t) => t.enabled)
     .filter((t) => {
       const tk = normalizeInstitutionKey(t.universityName);
-      return Boolean(tk && (tk === key || tk.includes(key) || key.includes(tk)));
+      return Boolean(tk && (tk === key || keyContains(tk, key) || keyContains(key, tk)));
     })
     .map((t) => t.url);
 }

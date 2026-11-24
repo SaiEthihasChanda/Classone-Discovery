@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
+import { Drawer, Tabs } from '../../components/ui';
+import { useAuth } from '../../auth/AuthProvider';
 import { api } from '../../api/client';
 import { useAsync } from '../../hooks/useAsync';
 import {
   AffiliationNote,
   ErrorBanner,
+  FundingList,
   InstrumentBadge,
   Loading,
   ScorePill,
@@ -13,11 +16,23 @@ import {
   formatDate,
 } from '../../components/common';
 
-export function LeadDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
-  const { data: lead, loading, error, reload } = useAsync(() => api.getLead(id!), [id]);
+type LeadTab = 'overview' | 'research' | 'instruments' | 'funding' | 'emails';
+
+/**
+ * One lead, as a side panel with top tabs (expand → full-screen overlay).
+ * `onChanged` lets the list behind it refresh after an approve, send or edit.
+ */
+export function LeadRecord({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged?: () => void }) {
+  const { can } = useAuth();
+  const [tab, setTab] = useState<LeadTab>('overview');
+  const [expanded, setExpanded] = useState(false);
+  const { data: lead, loading, error, reload: reloadLead } = useAsync(() => api.getLead(id), [id]);
+  const reload = () => {
+    reloadLead();
+    onChanged?.();
+  };
   const { data: scanCost } = useAsync(() => api.scanInstrumentsEstimate(), []);
+  const { data: backfillUsage } = useAsync(() => api.backfillAiUsage(), []);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -25,6 +40,10 @@ export function LeadDetailPage() {
   const [enriching, setEnriching] = useState(false);
   const [enrichNote, setEnrichNote] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
+  const [drafting, setDrafting] = useState(false);
+  const [threadBusyId, setThreadBusyId] = useState<string | null>(null);
+  const [threadNote, setThreadNote] = useState<string | null>(null);
 
   /**
    * Asks OpenAlex about this researcher's own papers, brand by brand. The
@@ -82,21 +101,28 @@ export function LeadDetailPage() {
     setBusy(true);
     try {
       await api.deleteLead(lead.id);
-      navigate('/leads');
+      onChanged?.();
+      onClose();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Could not delete the lead');
       setBusy(false);
     }
   }
 
-  if (loading && !lead) return <Loading />;
-  if (error) return <ErrorBanner message={error} />;
-  if (!lead) return null;
+  if (!lead) {
+    return (
+      <Drawer title="Lead" expanded={expanded} onToggleExpand={() => setExpanded(!expanded)} onClose={onClose}>
+        {loading ? <Loading /> : error ? <ErrorBanner message={error} /> : null}
+      </Drawer>
+    );
+  }
 
   const signals = lead.aiScoring.qualificationSignals;
   const instruments = lead.research.instruments ?? [];
-  const hasClassOneBrand = instruments.some((i) => i.vendor === 'classone');
-  const hasCompetitor = instruments.some((i) => i.vendor === 'competitor');
+  // Sightings flagged for review (a bare brand in a paper that is not electrochemistry) do not count as ownership.
+  const confirmed = instruments.filter((i) => !i.needsReview);
+  const hasClassOneBrand = confirmed.some((i) => i.vendor === 'classone');
+  const hasCompetitor = confirmed.some((i) => i.vendor === 'competitor');
   const canScan = /A\d{6,}/.test(`${lead.person.profileUrl ?? ''} ${lead.source.sourceRecordId ?? ''}`);
 
 
@@ -133,6 +159,86 @@ export function LeadDetailPage() {
     }
   }
 
+  /** Gemini web-search backfill — only reaches for whatever ORCID/the scraper above could not find. Needs the billed key. */
+  async function backfillAi() {
+    if (!lead) return;
+    setBackfilling(true);
+    setActionError(null);
+    setEnrichNote(null);
+    try {
+      const r = await api.backfillLeadAi(lead.id);
+      setEnrichNote(
+        r.filled.length > 0
+          ? `Gemini filled ${r.filled.join(', ')}.${r.sources.length > 0 ? ` Sources: ${r.sources.slice(0, 3).join(', ')}` : ''}`
+          : 'Gemini found nothing new.',
+      );
+      reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Backfill failed');
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
+  /** Drafts (or refreshes) this lead's next outreach message. Never sends — see the Outreach page. */
+  async function draftOutreachNow() {
+    if (!lead) return;
+    setDrafting(true);
+    setActionError(null);
+    setThreadNote(null);
+    try {
+      await api.draftOutreach(lead.id);
+      setThreadNote('Drafted — review and send it from the Outreach page.');
+      reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not draft outreach');
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function approveThread(threadId: string) {
+    setThreadBusyId(threadId);
+    setActionError(null);
+    setThreadNote(null);
+    try {
+      await api.approveSendOutreach(threadId);
+      setThreadNote('Sent.');
+      reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not send this draft');
+    } finally {
+      setThreadBusyId(null);
+    }
+  }
+
+  async function discardThreadDraft(threadId: string) {
+    if (!window.confirm('Discard this draft without sending it?')) return;
+    setThreadBusyId(threadId);
+    setActionError(null);
+    try {
+      await api.rejectDraft(threadId);
+      reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not discard this draft');
+    } finally {
+      setThreadBusyId(null);
+    }
+  }
+
+  async function markThreadReplied(threadId: string) {
+    setThreadBusyId(threadId);
+    setActionError(null);
+    try {
+      await api.markReplied(threadId);
+      reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not record the reply');
+    } finally {
+      setThreadBusyId(null);
+    }
+  }
+
   async function verifyNow(deep = false) {
     if (!lead) return;
     setVerifying(true);
@@ -141,7 +247,7 @@ export function LeadDetailPage() {
       const r = await api.verifyAffiliation(lead.id, deep);
       setEnrichNote(
         r.assessment
-          ? `Affiliation check: ${r.assessment.status === 'current' ? 'still at ' + (r.lead.institution.name ?? 'this institute') : r.assessment.status === 'moved' ? 'moved to ' + (r.lead.institution.name ?? '?') : 'current institute could not be established — cleared'}.`
+          ? `Affiliation check: ${r.assessment.status === 'current' ? 'still at ' + (r.lead.institution.name ?? 'this institute') : r.assessment.status === 'moved' ? 'moved to ' + (r.lead.institution.name ?? '?') : r.assessment.status === 'conflict' ? 'needs review — the sources disagree (see the note on Institution)' : 'current institute could not be established — cleared'}.`
           : 'OpenAlex has no affiliation record for this author.',
       );
       reload();
@@ -154,12 +260,33 @@ export function LeadDetailPage() {
 
   const enrichButton = (
     <button
-      className="btn btn-sm btn-primary"
+      className="btn btn-sm"
       onClick={enrichFromWeb}
       disabled={enriching}
       title="Read the institute profile page, ORCID, the lab website and open-access papers. Fills only blank fields; no OpenAlex credits."
     >
       {enriching ? 'Reading web pages…' : 'Enrich from web'}
+    </button>
+  );
+
+  const stillMissing = (['email', 'title', 'department', 'phone', 'websiteUrl'] as const).filter((f) =>
+    f === 'department' ? !lead.institution.department : !lead.person[f],
+  );
+
+  const backfillButton = (
+    <button
+      className="btn btn-sm"
+      onClick={backfillAi}
+      disabled={backfilling || stillMissing.length === 0}
+      title={
+        stillMissing.length === 0
+          ? 'Nothing missing — email, title, department, phone and website are all set'
+          : `Web-search for: ${stillMissing.join(', ')}. Needs a billed Gemini key — free past ${backfillUsage?.freeAllowance ?? 5000} searches/month, then $14 per 1,000.`
+      }
+    >
+      {backfilling
+        ? 'Searching…'
+        : `Find missing info (AI)${backfillUsage?.overFreeAllowance ? ` — ~$${backfillUsage.estimatedMonthCostUsd.toFixed(2)} this month` : ''}`}
     </button>
   );
 
@@ -181,52 +308,59 @@ export function LeadDetailPage() {
   );
 
   return (
-    <>
-      <div className="page-header">
-        <div>
-          <Link to="/leads" className="small">
-            ← Back to leads
-          </Link>
-          <h1 style={{ marginTop: 6 }}>{lead.person.name}</h1>
-          <p>
-            {lead.person.title && `${lead.person.title} · `}
-            {lead.institution.name ?? 'Institution unknown'}{' '}
-            <AffiliationNote affiliation={lead.institution.affiliation} institutionName={lead.institution.name} />
-          </p>
-        </div>
-
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {enrichButton}
+    <Drawer
+      title={lead.person.name}
+      subtitle={
+        <>
+          {lead.person.title && `${lead.person.title} · `}
+          {lead.institution.name ?? 'Institution unknown'}{' '}
+          <AffiliationNote affiliation={lead.institution.affiliation} institutionName={lead.institution.name} />
+        </>
+      }
+      expanded={expanded}
+      onToggleExpand={() => setExpanded(!expanded)}
+      onClose={onClose}
+      actions={
+        <>
           <StatusBadge status={lead.status} />
-          {lead.status === 'pending_review' && (
+          {lead.status === 'pending_review' && can('sales') && (
             <>
-              <button
-                className="btn btn-success btn-sm"
-                disabled={busy}
-                onClick={() => review('approved')}
-              >
+              <button className="btn btn-success btn-sm" disabled={busy} onClick={() => review('approved')}>
                 Approve
               </button>
-              <button
-                className="btn btn-danger btn-sm"
-                disabled={busy}
-                onClick={() => review('rejected')}
-              >
+              <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => review('rejected')}>
                 Reject
               </button>
             </>
           )}
-          <button className="btn btn-sm" disabled={busy} onClick={remove}>
-            Delete
-          </button>
-        </div>
-      </div>
-
+          <span style={{ flex: 1 }} />
+          {can('sales') && enrichButton}
+          {can('sales') && backfillButton}
+          {can('admin') && (
+            <button className="btn btn-sm btn-ghost" disabled={busy} onClick={remove}>
+              Delete
+            </button>
+          )}
+        </>
+      }
+      tabs={
+        <Tabs
+          items={[
+            { key: 'overview', label: 'Overview' },
+            { key: 'research', label: 'Research' },
+            { key: 'instruments', label: 'Instruments', count: instruments.length || undefined },
+            { key: 'funding', label: 'Funding' },
+            { key: 'emails', label: 'Emails', count: lead.threads.length || undefined },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+      }
+    >
       {actionError && <ErrorBanner message={actionError} />}
       {enrichNote && <div className="alert alert-info">{enrichNote}</div>}
 
-      <div className="detail-grid">
-        <div style={{ display: 'grid', gap: 18 }}>
+      {tab === 'research' && (
           <section className="card card-pad">
             <h2 className="section-title">Research</h2>
             {lead.research.summary ? (
@@ -270,7 +404,8 @@ export function LeadDetailPage() {
               </>
             )}
           </section>
-
+      )}
+      {tab === 'instruments' && (
           <section className="card card-pad">
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
               <h2 className="section-title" style={{ marginBottom: 0 }}>
@@ -291,7 +426,9 @@ export function LeadDetailPage() {
             ) : (
               <>
               <p className="muted small" style={{ marginTop: 10 }}>
-                {hasClassOneBrand && hasCompetitor
+                {confirmed.length === 0
+                  ? 'Only unconfirmed brand mentions so far — check the papers below before treating this as ownership.'
+                  : hasClassOneBrand && hasCompetitor
                   ? 'Uses both a Class One brand and competitor equipment — an upgrade and displacement opportunity.'
                   : hasClassOneBrand
                     ? 'Already uses a Class One brand — an existing user; think upgrade, multi-channel or accessories.'
@@ -304,6 +441,11 @@ export function LeadDetailPage() {
                       <strong>{inst.model ?? inst.brand}</strong>
                       {inst.model && <span className="muted small">{inst.brand}</span>}
                       <InstrumentBadge vendor={inst.vendor} />
+                      {inst.needsReview && (
+                        <span className="badge badge-pending" title="A bare brand name in a paper that does not read as electrochemistry — not counted as ownership until checked">
+                          needs review
+                        </span>
+                      )}
                     </div>
                     <div className="muted small" style={{ marginTop: 2 }}>
                       {inst.evidence}
@@ -322,33 +464,99 @@ export function LeadDetailPage() {
               </>
             )}
           </section>
-
+      )}
+      {tab === 'funding' && (
           <section className="card card-pad">
-            <h2 className="section-title">Email threads</h2>
+            <h2 className="section-title">Funding</h2>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              Funders and grant numbers acknowledged on recent papers; scheme and year are decoded from the grant number.
+              Title, amount and status are not in acknowledgements — for SERB/ANRF grants, SERB-PRISM has them by file number.
+            </p>
+            <FundingList funding={lead.research.funding} checkedAt={lead.research.fundingCheckedAt} />
+          </section>
+      )}
+      {tab === 'emails' && (
+          <section className="card card-pad">
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <h2 className="section-title" style={{ marginBottom: 0 }}>
+                Email threads
+              </h2>
+              <button
+                className="btn btn-sm"
+                onClick={draftOutreachNow}
+                disabled={drafting || !lead.person.email || lead.threads.some((t) => t.status === 'draft')}
+                title={!lead.person.email ? 'Needs an email address first' : 'AI-drafts the next message — never sends'}
+              >
+                {drafting ? 'Drafting…' : 'Draft outreach'}
+              </button>
+            </div>
+            {threadNote && (
+              <div className="alert alert-success" style={{ marginTop: 10 }}>
+                {threadNote}
+              </div>
+            )}
             {lead.threads.length === 0 ? (
-              <p className="muted small" style={{ margin: 0 }}>
-                No outreach yet. Threads appear here once the email system ships in Phase 3.
+              <p className="muted small" style={{ margin: '10px 0 0' }}>
+                No outreach yet. "Draft outreach" writes the first-touch email — approve it on the{' '}
+                <Link to="/outreach">Outreach page</Link> to send it.
               </p>
             ) : (
-              lead.threads.map((thread) => (
-                <div key={thread.id} className="feed-item">
-                  <span className="feed-dot" />
-                  <span>
-                    <strong>{thread.subjectLine}</strong>
-                    <div className="muted small">
-                      {thread.messages.length} message
-                      {thread.messages.length === 1 ? '' : 's'} · {thread.status} ·{' '}
-                      {thread.followUp.attemptsSent}/{thread.followUp.maxAttempts} follow-ups sent
+              <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+                {lead.threads.map((thread) => (
+                  <div key={thread.id} className="card-pad" style={{ background: 'var(--surface-alt)', borderRadius: 'var(--radius)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                      <div>
+                        <strong>{thread.subjectLine}</strong>
+                        <div className="muted small">
+                          {thread.status === 'draft' ? 'Pending draft' : thread.status} ·{' '}
+                          {thread.messages.length} sent · {thread.followUp.attemptsSent}/{thread.followUp.maxAttempts} follow-ups
+                        </div>
+                      </div>
+                      {thread.status === 'draft' && (
+                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                          <button className="btn btn-success btn-sm" disabled={threadBusyId === thread.id} onClick={() => approveThread(thread.id)}>
+                            Approve & send
+                          </button>
+                          <button className="btn btn-danger btn-sm" disabled={threadBusyId === thread.id} onClick={() => discardThreadDraft(thread.id)}>
+                            Discard
+                          </button>
+                        </div>
+                      )}
+                      {thread.status === 'open' && (
+                        <button className="btn btn-sm" disabled={threadBusyId === thread.id} onClick={() => markThreadReplied(thread.id)}>
+                          Mark replied
+                        </button>
+                      )}
                     </div>
-                  </span>
-                  <span className="feed-time">{formatDate(thread.createdAt)}</span>
-                </div>
-              ))
+                    {thread.status === 'draft' && thread.draftBody && (
+                      <p className="small" style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>
+                        {thread.draftBody}
+                      </p>
+                    )}
+                    {thread.messages.length > 0 && (
+                      <details style={{ marginTop: 8 }}>
+                        <summary className="small muted" style={{ cursor: 'pointer' }}>
+                          Message history ({thread.messages.length})
+                        </summary>
+                        <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                          {thread.messages.map((m) => (
+                            <li key={m.messageId} className="small" style={{ marginBottom: 6 }}>
+                              <strong>{m.direction === 'outbound' ? 'Sent' : 'Received'}</strong> · {m.type} ·{' '}
+                              {formatDate(m.sentAt)}
+                              <div className="muted">{m.subject}</div>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </section>
-        </div>
-
-        <div style={{ display: 'grid', gap: 18 }}>
+      )}
+      {tab === 'overview' && (
+        <div style={{ display: 'grid', gap: 28 }}>
           <section className="card card-pad">
             <h2 className="section-title">Contact</h2>
             <dl className="kv">
@@ -368,6 +576,8 @@ export function LeadDetailPage() {
                     {lead.institution.affiliation.status === 'current' && 'Confirmed current'}
                     {lead.institution.affiliation.status === 'moved' &&
                       `Moved here from ${lead.institution.affiliation.previousInstitution ?? '?'}`}
+                    {lead.institution.affiliation.status === 'conflict' &&
+                      `Needs review — ${lead.institution.affiliation.note ?? 'the sources disagree'}`}
                     {lead.institution.affiliation.status === 'unknown' &&
                       `Last seen at ${lead.institution.affiliation.previousInstitution ?? '?'}${lead.institution.affiliation.lastSeenYear ? ` (${lead.institution.affiliation.lastSeenYear})` : ''}; no current institute on record`}
                     {' · '}
@@ -536,7 +746,7 @@ export function LeadDetailPage() {
             </dl>
           </section>
         </div>
-      </div>
-    </>
+      )}
+    </Drawer>
   );
 }

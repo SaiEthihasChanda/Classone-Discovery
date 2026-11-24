@@ -13,9 +13,16 @@ not happen.
 Verified against the live site on 20 Sep 2026 (Laravel app):
     GET  /profiles                  form: _token, q, subject[], expertise[],
                                     sortfield (first_name|organization_name),
-                                    limits (12|24|48)
+                                    limits (12|24|48), org[], desig[], type[],
+                                    state[] (facets; values OR'd within one)
     POST /profiles/apply-filters    -> listing page 1; the filter is held in
                                     the session. "N Total Experts found".
+                                    Checked 25 Oct 2026: limits is validated
+                                    server-side — any other value (100, 500,
+                                    ?limits= or ?per_page= on GET) serves 12 —
+                                    and there is no JSON API or export, so 48
+                                    per page is the ceiling. org[] narrows to
+                                    the institute itself (search() uses it).
     GET  /profiles?page=N           -> page N of the SAME filter, 1-indexed
                                     (page=1 is page 1; the "page=0" link the
                                     site emits is a duplicate of it)
@@ -112,8 +119,34 @@ def _csrf_token(soup: BeautifulSoup) -> str | None:
 
 
 def parse_total(html: str) -> int | None:
-    m = TOTAL_RE.search(re.sub(r"\s+", " ", html))
+    # Since Oct 2026 the count and its label sit in separate elements: "277 <span>Total Experts found".
+    m = TOTAL_RE.search(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)))
     return int(m.group(1).replace(",", "")) if m else None
+
+
+def parse_org_facets(html: str) -> list[str]:
+    """The Organisation filter's values on a results page (organisations among the current results)."""
+    soup = BeautifulSoup(html, "lxml")
+    return [str(i["value"]) for i in soup.find_all("input", {"name": "org[]"}) if isinstance(i, Tag) and i.get("value")]
+
+
+def _norm_org(text: str) -> str:
+    """Lowercase words with the common spellings folded together, so "Indian Institute of Technology
+    (IIT) Ropar", "IIT Ropar, Rupnagar" and "Indian Institute of Technology, Ropar" all contain "iit ropar"."""
+    s = re.sub(r"[^a-z0-9]+", " ", text.lower().replace("&", " and "))
+    s = re.sub(r"\bindian institute of technology\b", "iit", s)
+    s = re.sub(r"\bbhubaneshwar\b", "bhubaneswar", s)
+    words: list[str] = []
+    for w in s.split():
+        if not words or words[-1] != w:  # "iit iit ropar" -> "iit ropar"
+            words.append(w)
+    return " ".join(words)
+
+
+def matching_orgs(facets: list[str], terms: list[str]) -> list[str]:
+    """Facet values naming the institute: a term as whole words inside the value ("IIT Patna" is not "IIIT Patna")."""
+    pats = [re.compile(rf"(^| ){re.escape(_norm_org(t))}( |$)") for t in terms if len(_norm_org(t)) >= 6]
+    return sorted({f for f in facets if any(p.search(_norm_org(f)) for p in pats)})
 
 
 def _profile_id(href: str, base_url: str) -> tuple[str, str] | None:
@@ -263,6 +296,9 @@ class VidwanClient:
             },
         )
         self.requests = 0
+        # Organisation-filter values the last search was narrowed to.
+        self.last_orgs: list[str] = []
+        self._token: str | None = None
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -286,20 +322,49 @@ class VidwanClient:
         """Several profiles at once, paced by the client; exceptions are returned in place."""
         return await asyncio.gather(*(self.profile(l) for l in listings), return_exceptions=True)
 
-    async def search(self, query: str, *, max_pages: int = 50, on_page=None) -> tuple[list[VidwanListing], int, int | None]:
-        """Every listing card for one query: (listings, pages fetched, total the site reports)."""
-        profiles_url = f"{self.base_url}/profiles"
-        landing = await self._request("GET", profiles_url)
-        token = _csrf_token(BeautifulSoup(landing.text, "lxml"))
-        if not token:
-            raise RuntimeError("Vidwan search page has no CSRF token — the site layout has changed")
+    async def search(
+        self, query: str, *, max_pages: int = 50, on_page=None, org_terms: list[str] | None = None, done_orgs: set[frozenset[str]] | None = None,
+        free_text_fallback: bool = True,
+    ) -> tuple[list[VidwanListing], int, int | None]:
+        """Every listing card for one query: (listings, pages fetched, total the site reports).
 
-        first = await self._request(
-            "POST",
-            f"{self.base_url}/profiles/apply-filters",
-            data={"_token": token, "q": query, "sortfield": "first_name", "limits": str(PAGE_SIZE)},
-            headers={"Referer": profiles_url, "Origin": self.base_url},
-        )
+        With `org_terms`, the free-text results are narrowed to the Organisation filter values that
+        name the institute. The site serves at most 48 cards a page whatever is asked, so this is how
+        to cut pages: free text also matches people elsewhere who merely mention the institute
+        (measured 25 Oct 2026: "Indian Institute of Technology Patna" -> 277 hits, 125 at IIT Patna).
+        An org set already in `done_orgs` (another alias of the same institute) is not paged again.
+        With `free_text_fallback=False`, a query whose results name no matching organisation stops
+        after page 1 ("IIT Bhubaneswar" -> 1,760 hits, nearly all at KIIT).
+        """
+        profiles_url = f"{self.base_url}/profiles"
+        # The form token lasts the session, so later queries in it skip the landing page.
+        if not self._token:
+            landing = await self._request("GET", profiles_url)
+            self._token = _csrf_token(BeautifulSoup(landing.text, "lxml"))
+            if not self._token:
+                raise RuntimeError("Vidwan search page has no CSRF token — the site layout has changed")
+        token = self._token
+
+        async def apply(data: dict) -> httpx.Response:
+            return await self._request(
+                "POST",
+                f"{self.base_url}/profiles/apply-filters",
+                data={"_token": token, "sortfield": "first_name", "limits": str(PAGE_SIZE), **data},
+                headers={"Referer": profiles_url, "Origin": self.base_url},
+            )
+
+        first = await apply({"q": query})
+        self.last_orgs = []
+        orgs = matching_orgs(parse_org_facets(first.text), org_terms) if org_terms else []
+        if orgs:
+            self.last_orgs = orgs
+            if done_orgs is not None:
+                if frozenset(orgs) in done_orgs:
+                    return [], 1, None
+                done_orgs.add(frozenset(orgs))
+            first = await apply({"q": "", "org[]": orgs})
+        elif org_terms and not free_text_fallback:
+            return [], 1, None
         total = parse_total(first.text)
         listings: list[VidwanListing] = []
         seen: set[str] = set()

@@ -19,7 +19,8 @@ from bs4 import BeautifulSoup
 
 from ..core.schemas import ExtractedPerson
 from .faculty_scraper import parse_faculty_page
-from .static_fetcher import FetchError, fetch_page
+from .static_fetcher import FetchError
+from .tiered_fetcher import fetch_rendered
 
 # Link text or URL fragments that suggest a people listing.
 DIRECTORY_HINTS = (
@@ -122,7 +123,7 @@ async def find_faculty_pages(
     results: list[dict] = []
 
     try:
-        homepage = await fetch_page(root_url, timeout_sec)
+        homepage = await fetch_rendered(root_url, timeout_sec)
     except FetchError as exc:
         return [{"url": root_url, "error": exc.reason.value, "detail": exc.detail}]
 
@@ -142,7 +143,7 @@ async def find_faculty_pages(
         seen_urls.add(url)
 
         try:
-            html = await fetch_page(url, timeout_sec)
+            html = await fetch_rendered(url, timeout_sec)
         except FetchError:
             continue
         except Exception:  # noqa: BLE001 - one bad page must not stop the crawl
@@ -304,7 +305,7 @@ async def find_department_faculty_pages(
     # only loses the links it would have contributed.
     homepage = ""
     try:
-        homepage = await fetch_page(root_url, timeout_sec)
+        homepage = await fetch_rendered(root_url, timeout_sec)
     except FetchError as exc:
         if exc.reason.value == "robots_disallowed":
             return [{"url": root_url, "error": exc.reason.value, "detail": exc.detail}]
@@ -343,7 +344,7 @@ async def find_department_faculty_pages(
     ][:3]
     for url, text in index_pages:
         try:
-            index_html = await fetch_page(url, timeout_sec)
+            index_html = await fetch_rendered(url, timeout_sec)
         except Exception:  # noqa: BLE001
             continue
         for sub_url, sub_text in _links_with_text(index_html, url):
@@ -377,7 +378,7 @@ async def find_department_faculty_pages(
         attempts += 1
 
         try:
-            html = await fetch_page(url, seed_timeout if url in seed_urls else timeout_sec)
+            html = await fetch_rendered(url, seed_timeout if url in seed_urls else timeout_sec)
         except FetchError as exc:
             # A linked page (not a guessed host) that timed out gets one more
             # try: institute servers are slow in bursts, and a listing missed
@@ -386,7 +387,7 @@ async def find_department_faculty_pages(
                 continue
             try:
                 await asyncio.sleep(2)
-                html = await fetch_page(url, timeout_sec)
+                html = await fetch_rendered(url, timeout_sec)
             except Exception:  # noqa: BLE001
                 continue
         except Exception:  # noqa: BLE001 - one bad page must not stop the crawl

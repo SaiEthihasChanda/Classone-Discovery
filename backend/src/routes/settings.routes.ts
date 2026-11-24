@@ -9,8 +9,44 @@ import {
   type ScrapeTargetConfig,
 } from '../services/settings/settingsService.js';
 import { INDIAN_INSTITUTIONS, institutionCounts } from '../data/indianInstitutions.js';
+import { env } from '../config/env.js';
+import { getAiProvider } from '../services/ai/enrichmentService.js';
+import { getBackfillUsage } from '../integrations/geminiBackfillBudget.js';
 
 export const settingsRouter = Router();
+
+/**
+ * GET /api/settings/outreach — the email + AI configuration in effect. These
+ * come from .env (not the editable settings document), so this is read-only;
+ * secrets are reported only as set / not set.
+ */
+settingsRouter.get(
+  '/outreach',
+  asyncHandler(async (_req, res) => {
+    const usage = await getBackfillUsage();
+    res.json({
+      email: {
+        provider: env.EMAIL_PROVIDER,
+        fromName: env.EMAIL_FROM_NAME,
+        fromAddress: env.EMAIL_FROM_ADDRESS,
+        gmailConfigured: Boolean(env.GMAIL_CLIENT_ID && env.GMAIL_CLIENT_SECRET && env.GMAIL_REFRESH_TOKEN),
+      },
+      followUp: {
+        waitDays: env.FOLLOWUP_WAIT_DAYS,
+        maxAttempts: env.FOLLOWUP_MAX_ATTEMPTS,
+        schedule: env.CRON_FOLLOWUP_CHECK_SCHEDULE,
+        cronEnabled: env.CRON_ENABLED,
+      },
+      ai: {
+        scoringProvider: getAiProvider().name,
+        scoringKeySet: Boolean(env.GEMINI_API_KEY),
+        backfillKeySet: Boolean(env.GEMINI_BACKFILL_API_KEY),
+        backfillModel: env.GEMINI_BACKFILL_MODEL,
+        backfillUsage: usage,
+      },
+    });
+  }),
+);
 
 const targetSchema = z.object({
   targetId: z.string().optional(),

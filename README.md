@@ -87,16 +87,20 @@ nothing real to point at. Re-runnable; it upserts rather than duplicating.
 
 ### 6. Run
 
-Two terminals:
-
 ```bash
-# Terminal 1 — local MongoDB + backend + frontend together
 npm run dev
-
-# Terminal 2 — scraper service (separate runtime, so its own terminal)
-cd scraper-service
-.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 ```
+
+One command starts everything: the local MongoDB, the backend, the frontend, and the Python
+scraper service. The scraper runs under `scripts/dev-scraper.mjs`, which:
+
+- reuses a scraper that is already answering on port 8000;
+- otherwise starts it from `scraper-service/.venv`;
+- restarts it if it dies;
+- stops the run with the setup command if the `.venv` is missing.
+
+Faculty pages and Vidwan are therefore never silently skipped because the scraper wasn't started.
+`npm run dev:scraper` runs the scraper on its own.
 
 Then open **http://localhost:5173**.
 
@@ -287,6 +291,11 @@ days when they resurface, and *Verify affiliations* on the CRM page re-checks th
 - latest work is from elsewhere, and newer than anything from ours → **moved**; the lead shows
   the **new** institute, with the old one kept as `previousInstitution`
 - nothing recent anywhere → **unknown**; the institute is **blank**, not stale
+- the sources disagree → **conflict** ("needs review"); the institute is kept and a note says why. This covers two cases:
+  - ORCID shows a current job only somewhere else while the latest paper still names the institute. ORCID is out of date, or this is a namesake.
+  - The latest paper lists more than 8 institutions, which almost always means several people with the same name merged into one OpenAlex record.
+
+Instrument sightings get the same caution. A bare brand name found in a paper whose title isn't electrochemistry (no model number, no sentence we matched ourselves) is kept but marked **needs review**, e.g. a symposium report "mentioning BioLogic SAS". It doesn't count towards scoring, promotion, sweep admissions or the "Class One customer" export column. `npm --prefix backend run review:apply` applies both rules to records checked before they existed. It works from stored evidence only, runs as a dry run unless given `--apply`, and saves a backup to `logs/`.
 
 A concurrent second affiliation (a joint centre) with the same latest year is *not* treated as a
 move. The web-enrichment pass adds the most current signal there is — whether the institute's
@@ -316,6 +325,64 @@ finds nothing. They remain configurable under *Settings → Search keywords → 
 registries* should either open up or publish an API. In practice the check today rests on the
 institute directory (where one parses), ORCID and OpenAlex — ORCID being the one that most often
 carries a current, self-entered employment.
+
+### Application areas and the pipeline's keyword override
+
+Every roster member and CRM lead is tagged with Class One's focus application areas. There are ten, from "Thin-film coating & electrodeposition/electroplating" to "Customized electrochemical systems & POC devices", defined in `services/roster/applicationAreas.ts`. An area matches when its terms appear in the person's indexed topics (counted twice) or recent paper titles (counted once), with a total of 2 or more. The score stage re-tags its institutes on every run, and `npm --prefix backend run roster:tag-areas` re-tags everyone. Both are local and free. The Faculty page has an **Application areas** filter: any area, a specific one, or outside the focus areas.
+
+The pipeline form has a **Keyword / application-area override** for a single run:
+
+| Treat the list as | Add to the defaults | Use only this list |
+|---|---|---|
+| keywords | extra relevance-scoring terms | relevance is judged on these terms alone |
+| application areas | extra areas to tag | only these areas are tagged, and **only people in at least one are promoted** |
+
+**Areas are tagged at build time.** The build tags everyone from the OpenAlex topics that come with the institute's author list, at no cost. In an "only these areas" run, the score stage then **skips** anyone whose known topics fall outside every area: no works call and no credit, and they stay unscored, so a later run without the override can still score them. People with no topics yet (found only on a faculty page or ORCID) are always scored. The pipeline's cost estimate shows how many are left out.
+
+This supports a two-pass workflow for a new list of institutes:
+1. **Build + Verify** for all of them (cheap): names, roles, departments, affiliation and areas.
+2. **Score → Sweep → Promote → Fill** with the area override set to "use only this list".
+
+Write one item per line. An area can carry its own terms as `Label: term, term`; otherwise the terms come from the default area of that name, or are derived from the label's words. With an override set, members who are already scored are re-evaluated from their stored topics, titles and evidence at no credit cost. The override is saved with the run.
+
+### Excel downloads
+
+The Faculty page's **Download Excel** produces a workbook formatted for sending. Every sheet has:
+- a title band and a live summary line (researchers, emails, phones, identified systems);
+- a colour key and a bordered, banded table with filter buttons and a frozen header;
+- Arial throughout, clickable emails, and landscape print setup.
+
+**Layouts:**
+- **Presentable (default):** Name, Department, Application, Phone, Email and Current System Used. The system column is colour-coded: green for a Class One brand, amber for a competitor, grey for not identified. Department spellings are normalised. A department that isn't the institute's falls back to the research domain, in grey italics. Phone numbers share one format. Emails outside the institute's own domain are grey italic, marked "verify before use".
+- **Full detail:** every export column, in the same style, printed three pages wide.
+
+"Split into sheets by" still adds one sheet per value next to *All*. The CSV export is unchanged.
+
+### Funding agencies (from paper acknowledgements)
+
+Every researcher's record shows which agencies fund their recent work: SERB, ANRF, DST, DBT, ICMR, CSIR and BIRAC (other funders are kept as "other").
+
+**Where it comes from.** OpenAlex records the funders each paper thanks and the grant numbers it prints. The roster's scoring pass already fetches each person's recent papers in one call, and these fields ride on that same call at **no extra credit cost**.
+
+**What's recorded per grant:**
+- The agency.
+- The grant number as printed, e.g. `CRG/2022/001541`.
+- The scheme and sanction year decoded from that number, e.g. SERB Core Research Grant, 2022. SERB numbers credited to DST are counted as SERB.
+- How many recent papers acknowledge it, with an example paper.
+
+Only grant-number formats whose meaning is certain are decoded. The rest are stored as printed.
+
+**Where it shows up:**
+- **Faculty page:** a Funding column, an agency filter, and a "Grant since <year>" filter. The expanded row lists every grant.
+- **Lead page:** a Funding section. Each SERB/ANRF grant has a **SERB-PRISM →** button that copies the grant number and opens SERB-PRISM. Paste the number into its file-number search for the project title, status and sanctioned equipment. SERB-PRISM's search has a captcha, so this step stays manual.
+- **CSV and Excel exports:** "Funding agencies", "Latest grant year" and "Grants" columns, plus a "split by funding agency" option for the Excel workbook.
+
+**Limits:**
+- About half of papers name no funder, so an empty Funding field doesn't mean no funding.
+- Acknowledgements carry no project title, amount, status or end date.
+- ANRF doesn't yet have its own funder record in OpenAlex. Its grants show up only when a paper names it.
+
+**People scored before this existed:** run `npm --prefix backend run funding:refresh`. It estimates first and fetches nothing. Add `--apply`, optionally with `--limit N` or `--institution <id>`, to read their funding at 1 OpenAlex credit per person. Promoted leads get the same funding.
 
 ### Per-lead web enrichment (scraper service)
 
@@ -553,6 +620,16 @@ to good intentions:
   comes from the NIH RePORTER and NSF Award Search APIs (both verified live, both free, no key)
   instead of scraping government portals.
 - Login walls and CAPTCHAs are skipped and logged, never worked around.
+
+---
+
+## Running it in the cloud
+
+[`deploy/DEPLOYMENT.md`](deploy/DEPLOYMENT.md) covers it. In short, the whole stack runs on one small
+Ubuntu VM in an India region (about $12 a month), set up with a single script
+(`deploy/setup.sh`), behind Caddy with automatic HTTPS. `npm run db:export` / `db:import` (in
+`backend`) move the database across. `deploy/probe-ip.sh` checks, before you commit to a
+provider, whether its IPs can reach the faculty pages and Vidwan.
 
 ---
 

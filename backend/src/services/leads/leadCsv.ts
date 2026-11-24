@@ -7,6 +7,8 @@
  * string, since a salesperson opens this in Excel, not a parser.
  */
 import type { Lead } from '../../types/domain.js';
+import { confirmedInstruments, instrumentNeedsReview } from '../discovery/instrumentDetector.js';
+import { AGENCY_LABEL, agenciesIn, fundingLine, latestGrantYear } from '../funding/fundingAgencies.js';
 
 /** Column header -> how to read it off a lead. Order here is the column order. */
 const COLUMNS: Array<[string, (lead: Lead) => unknown]> = [
@@ -25,6 +27,7 @@ const COLUMNS: Array<[string, (lead: Lead) => unknown]> = [
     },
   ],
   ['Previous institution', (l) => l.institution.affiliation?.previousInstitution],
+  ['Affiliation note', (l) => l.institution.affiliation?.note],
   ['Affiliation source', (l) => l.institution.affiliation?.source],
   ['Affiliation checked', (l) => l.institution.affiliation?.verifiedAt],
   ['Department', (l) => l.institution.department],
@@ -37,12 +40,20 @@ const COLUMNS: Array<[string, (lead: Lead) => unknown]> = [
   ['Instrument model', (l) => instrumentsByBrand(l).map((b) => b.models.join(' / ')).join('; ')],
   [
     'Class One brand user',
-    (l) => (l.research.instruments.some((i) => i.vendor === 'classone') ? 'yes' : 'no'),
+    (l) => (confirmedInstruments(l.research.instruments).some((i) => i.vendor === 'classone') ? 'yes' : 'no'),
   ],
   [
     'Competitor user',
-    (l) => (l.research.instruments.some((i) => i.vendor === 'competitor') ? 'yes' : 'no'),
+    (l) => (confirmedInstruments(l.research.instruments).some((i) => i.vendor === 'competitor') ? 'yes' : 'no'),
   ],
+  [
+    // A bare brand name in a paper that does not read as electrochemistry: check before relying on it.
+    'Instruments to review',
+    (l) => l.research.instruments.filter((i) => instrumentNeedsReview(i)).map((i) => `${i.brand}: ${i.evidence}`).join('; '),
+  ],
+  ['Funding agencies', (l) => agenciesIn(l.research.funding).map((a) => AGENCY_LABEL[a]).join('; ')],
+  ['Latest grant year', (l) => latestGrantYear(l.research.funding)],
+  ['Grants (paper acknowledgements)', (l) => (l.research.funding ?? []).filter((f) => f.agency !== 'other').map(fundingLine).join('; ')],
   ['Recommended products', (l) => l.aiScoring.recommendedProductIds.join('; ')],
   ['Research topics', (l) => l.research.topics.join('; ')],
   ['Research summary', (l) => l.research.summary],

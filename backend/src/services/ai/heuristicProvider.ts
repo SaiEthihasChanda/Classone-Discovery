@@ -11,6 +11,7 @@
  */
 import type { QualificationSignals } from '../../types/domain.js';
 import type { AiProvider, EnrichmentInput, EnrichmentResult } from './types.js';
+import { confirmedInstruments } from '../discovery/instrumentDetector.js';
 
 /**
  * Terms that indicate electrochemistry work, weighted by how specific they are.
@@ -55,6 +56,9 @@ const DOMAIN_TERMS: Array<{ term: string; weight: number }> = [
   { term: 'thin film', weight: 8 },
 ];
 
+/** Weight of a term added by a pipeline's keyword override — that of a specific technique term. */
+const FOCUS_TERM_WEIGHT = 20;
+
 /** Institutions with heavy research funding tend to have equipment budgets. */
 const STRONG_INSTITUTION_MARKERS = [
   'institute of technology',
@@ -86,7 +90,10 @@ export class HeuristicProvider implements AiProvider {
   readonly name = 'rule-based-scoring (no AI model) v1';
   readonly billable = false;
 
-  async enrich({ candidate, catalog }: EnrichmentInput): Promise<EnrichmentResult> {
+  async enrich({ candidate, catalog, focus }: EnrichmentInput): Promise<EnrichmentResult> {
+    // A run's keyword override: extra terms on top of the built-in list, or only the given terms.
+    const focusTerms = (focus?.keywords ?? []).map((term) => ({ term: term.toLowerCase(), weight: FOCUS_TERM_WEIGHT }));
+    const terms = focus?.keywordsOnly && focusTerms.length ? focusTerms : [...DOMAIN_TERMS, ...focusTerms.filter((f) => !DOMAIN_TERMS.some((d) => d.term === f.term))];
     const haystack = [
       candidate.evidenceText,
       candidate.topics.join(' '),
@@ -100,7 +107,7 @@ export class HeuristicProvider implements AiProvider {
     // --- Product relevance: weighted domain-term hits, saturating ----------
     let rawRelevance = 0;
     const matchedTerms: string[] = [];
-    for (const { term, weight } of DOMAIN_TERMS) {
+    for (const { term, weight } of terms) {
       const hits = countMatches(haystack, term);
       if (hits > 0) {
         matchedTerms.push(term);
@@ -113,7 +120,8 @@ export class HeuristicProvider implements AiProvider {
     // potentiostat work — stronger than any keyword. A competitor's unit means
     // a proven buyer of this category; a PalmSens/CorrTest means an existing
     // customer. Either way the lead is real; the sales motion differs.
-    const instruments = candidate.instruments ?? [];
+    // Sightings that still need review (a bare brand in a non-electrochemistry paper) do not count.
+    const instruments = confirmedInstruments(candidate.instruments);
     const ownsClassOne = instruments.some((i) => i.vendor === 'classone');
     const ownsCompetitor = instruments.some((i) => i.vendor === 'competitor');
     if (ownsClassOne || ownsCompetitor) rawRelevance += 35;
@@ -193,7 +201,9 @@ export class HeuristicProvider implements AiProvider {
       relevanceReasoning:
         (matchedTerms.length > 0
           ? `Keyword match on: ${matchedTerms.slice(0, 6).join(', ')}.`
-          : 'No electrochemistry-related terms found in the available text.') + instrumentNote,
+          : focus?.keywordsOnly
+            ? "None of this run's keywords found in the available text."
+            : 'No electrochemistry-related terms found in the available text.') + instrumentNote,
       signals,
       summary,
       topics: candidate.topics.slice(0, 8),

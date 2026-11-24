@@ -13,6 +13,7 @@ JS-rendered directory looks exactly like an empty one over plain HTTP.
 Tiers 2 and 3 only run when explicitly enabled, so the default path stays cheap.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -27,6 +28,32 @@ _TERMINAL_REASONS = {
     ScrapeErrorReason.ROBOTS_DISALLOWED,  # a policy decision, not a technical block
     ScrapeErrorReason.LOGIN_REQUIRED,
 }
+
+
+# A served page with fewer links than this is an empty shell that a script fills
+# in (IIT Jammu: 7 links over plain HTTP, 192 once rendered).
+_MIN_LINKS_IF_RENDERED = 15
+
+
+def looks_unrendered(html: str) -> bool:
+    return len(re.findall(r"<a\s[^>]*href=", html, re.I)) < _MIN_LINKS_IF_RENDERED
+
+
+async def fetch_rendered(url: str, timeout_sec: int | None = None, *, allow_browser: bool = True) -> str:
+    """Plain HTTP first; a near-empty shell is loaded again in the browser.
+
+    Without this, a script-built site exposes no department or faculty links and
+    the crawl ends at the homepage. The browser fetch follows the same rules
+    (robots.txt, honest User-Agent, per-domain delay). If it fails, the static
+    page is kept: a thin page is still a valid answer.
+    """
+    html = await fetch_page(url, timeout_sec)
+    if not (allow_browser and settings.scraper_enable_browser) or not looks_unrendered(html):
+        return html
+    try:
+        return await fetch_page_dynamic(url, timeout_sec)
+    except Exception:  # noqa: BLE001
+        return html
 
 
 @dataclass

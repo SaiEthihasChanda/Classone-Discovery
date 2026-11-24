@@ -78,7 +78,12 @@ export interface AffiliationEvidence {
 }
 
 export interface LeadAffiliation {
-  status: 'current' | 'moved' | 'unknown' | 'unverified';
+  /**
+   * `conflict` = the sources disagree and a person should look before anyone visits: ORCID shows a
+   * current employment only elsewhere while the latest paper still names the institute, or the
+   * OpenAlex author record looks like several people merged under one name. The institute is kept.
+   */
+  status: 'current' | 'moved' | 'unknown' | 'unverified' | 'conflict';
   verifiedAt: Date;
   /** Which source decided the status (highest-precedence one that had an answer). */
   source: 'openalex' | 'directory' | 'irins' | 'vidwan' | 'orcid' | string;
@@ -146,6 +151,41 @@ export interface LeadInstrument {
   evidence: string;
   sourceUrl?: string;
   matchedVia: 'fulltext_search' | 'text_match';
+  /**
+   * True when the sighting is a bare brand name in a paper that does not read as electrochemistry
+   * (no model number, no matched sentence, no electrochemical term in the title), e.g. a symposium
+   * report "mentioning BioLogic SAS". Kept for a person to check, but not counted as ownership.
+   * Set by `mergeInstruments` (see `instrumentNeedsReview`).
+   */
+  needsReview?: boolean;
+}
+
+/** Funding agencies the sales team tracks; anything else is `other` (see `services/funding/fundingAgencies.ts`). */
+export type FundingAgency = 'serb' | 'anrf' | 'dst' | 'dbt' | 'icmr' | 'csir' | 'birac' | 'other';
+
+/**
+ * A funder (and, when printed, a grant number) acknowledged on the researcher's recent papers.
+ * Scheme and year are decoded from the grant number; title, amount and status are not available
+ * from acknowledgements (SERB-PRISM has them, looked up by grant number).
+ */
+export interface FundingAcknowledgement {
+  agency: FundingAgency;
+  /** Funder name as credited, e.g. "Science and Engineering Research Board". */
+  funder: string;
+  /** OpenAlex funder id, e.g. "F4320334771". */
+  funderId?: string;
+  /** Grant number as printed, e.g. "CRG/2022/001541". */
+  awardId?: string;
+  /** Decoded scheme, e.g. "Core Research Grant (CRG)". */
+  scheme?: string;
+  /** Sanction year decoded from the grant number. */
+  year?: number;
+  /** How many of the recent papers acknowledge it. */
+  papers: number;
+  /** The newest paper that acknowledges it. */
+  workTitle?: string;
+  workYear?: number;
+  workUrl?: string;
 }
 
 export interface LeadResearch {
@@ -163,6 +203,12 @@ export interface LeadResearch {
   recentGrants: LeadGrant[];
   /** Empty for most leads — the UI omits the section entirely when so. */
   instruments: LeadInstrument[];
+  /** Funders and grant numbers acknowledged on recent papers. */
+  funding?: FundingAcknowledgement[];
+  /** When funding was last read (absent = never; an empty list then means "none acknowledged"). */
+  fundingCheckedAt?: Date;
+  /** Focus application areas the researcher's work falls in, strongest first (see services/roster/applicationAreas). */
+  applicationAreas?: string[];
   /** When the profile/lab/paper web enrichment last ran for this lead. */
   webEnrichedAt?: Date;
 }
@@ -205,6 +251,8 @@ export interface Lead {
   review: LeadReview;
   followUpStatusSummary: FollowUpStatusSummary;
   activeThreadId?: string;
+  /** Promoted by the Prospects conveyor but still filling info — not shown in Leads yet. */
+  inPipeline?: boolean;
   tags: string[];
   createdAt: Date;
   updatedAt: Date;
@@ -217,7 +265,7 @@ export type LeadCreateInput = Omit<Lead, 'id' | 'createdAt' | 'updatedAt'>;
 // Email threads (thread history + follow-up tracking in one document)
 // ---------------------------------------------------------------------------
 
-export type ThreadStatus = 'open' | 'replied' | 'closed';
+export type ThreadStatus = 'draft' | 'open' | 'replied' | 'closed';
 
 export type ThreadClosedReason =
   | 'replied'
@@ -270,6 +318,12 @@ export interface EmailThread {
   /** Bounded by the follow-up policy (initial + 2 follow-ups + replies), so embedding is safe. */
   messages: ThreadMessage[];
   followUp: ThreadFollowUp;
+  /** A pending, unsent draft — present only while status is 'draft'. */
+  draftType?: MessageType;
+  draftSubject?: string;
+  draftBody?: string;
+  draftModel?: string;
+  draftCreatedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -441,6 +495,11 @@ export interface FacultyMember {
     /** Abstract/keyword text gathered for scoring. */
     evidenceText?: string;
     instruments: LeadInstrument[];
+    /** Funders and grant numbers acknowledged on recent papers (see `LeadResearch.funding`). */
+    funding?: FundingAcknowledgement[];
+    fundingCheckedAt?: Date;
+    /** Focus application areas, strongest first (see LeadResearch.applicationAreas). */
+    applicationAreas?: string[];
   };
   relevance: {
     score?: number;
@@ -453,8 +512,26 @@ export interface FacultyMember {
   leadId?: string;
   promotedAt?: Date;
   tags: string[];
+  /** Position on the Prospects conveyor — see services/pipeline/flowEngine.ts. */
+  flow?: MemberFlow;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type FlowStage = 'verify' | 'score' | 'promote' | 'fill' | 'done';
+export type FlowState = 'idle' | 'queued' | 'processing' | 'review' | 'failed';
+
+export interface MemberFlow {
+  stage: FlowStage;
+  state: FlowState;
+  forced?: boolean;
+  attempts?: number;
+  nextAttemptAt?: Date;
+  lastError?: string;
+  note?: string;
+  startedAt?: Date;
+  updatedAt?: Date;
+  runId?: string;
 }
 
 export type FacultyMemberCreateInput = Omit<FacultyMember, 'id' | 'createdAt' | 'updatedAt'>;

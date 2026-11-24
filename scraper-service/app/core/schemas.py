@@ -30,6 +30,10 @@ class ScrapeErrorReason(str, Enum):
     # a blocked target should be dropped from the target list, not credentialed.
     # We do not spoof a browser User-Agent to get around this.
     BLOCKED = "blocked"
+    # The host could not be reached at all: refused, reset or dropped
+    # connections, TLS handshake failures, DNS errors. Usually the site is down;
+    # retrying the same host in the same run is pointless.
+    UNREACHABLE = "unreachable"
     UNKNOWN = "unknown"
 
 
@@ -372,6 +376,8 @@ class VidwanSearchResponse(BaseModel):
     listing_profiles: int = 0
     # What the site said the query matched in total.
     site_total: Optional[int] = None
+    # Vidwan Organisation-filter values the search was narrowed to (empty: free text only).
+    organisations: list[str] = Field(default_factory=list)
     pages_fetched: int = 0
     profiles_fetched: int = 0
     requests: int = 0

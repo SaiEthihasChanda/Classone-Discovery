@@ -18,7 +18,7 @@
 import { repositories, where } from '../../repositories/index.js';
 import { INDIAN_INSTITUTIONS } from '../../data/indianInstitutions.js';
 import type { FacultyMember } from '../../types/domain.js';
-import { mergeInstruments } from '../discovery/instrumentDetector.js';
+import { confirmedInstruments, mergeInstruments } from '../discovery/instrumentDetector.js';
 import { countModelQueries, fetchFromOpenAlex } from '../discovery/sources.js';
 import type { DiscoveredCandidate } from '../discovery/types.js';
 import type { JobContext } from '../jobs/jobRunner.js';
@@ -29,6 +29,8 @@ import { scoreRoster } from './rosterRelevance.js';
 
 export interface SweepOptions {
   institutionIds: string[];
+  /** Limit the sweep to these brand keys — cuts credits when only Class One and a couple of competitors matter. Default: every enabled brand. */
+  brands?: string[];
   /** Re-score members whose instruments changed. Default true. */
   rescore?: boolean;
 }
@@ -59,9 +61,9 @@ export interface SweepSummary {
 }
 
 /** Cost before running, for the confirmation dialog. */
-export async function estimateSweepCredits(institutions: number): Promise<{ min: number; max: number; brands: number }> {
+export async function estimateSweepCredits(institutions: number, brandKeys?: string[]): Promise<{ min: number; max: number; brands: number }> {
   const settings = await getSettings();
-  const brands = settings.discovery.instrumentBrands.filter((b) => b.enabled && b.searchEnabled);
+  const brands = settings.discovery.instrumentBrands.filter((b) => b.enabled && b.searchEnabled && (!brandKeys?.length || brandKeys.includes(b.key)));
   const models = settings.discovery.identifyModels ? countModelQueries(brands) : 0;
   return { brands: brands.length, min: institutions * brands.length * 10, max: institutions * (brands.length * 5 + models * 2) * 10 };
 }
@@ -71,7 +73,7 @@ const authorIdOf = (c: DiscoveredCandidate): string | undefined => c.sourceRecor
 export async function sweepInstruments(options: SweepOptions, ctx: JobContext, deps: SweepDeps = {}): Promise<SweepSummary> {
   const fetchBrands = deps.fetchBrands ?? fetchFromOpenAlex;
   const settings = await getSettings();
-  const brands = settings.discovery.instrumentBrands.filter((b) => b.enabled);
+  const brands = settings.discovery.instrumentBrands.filter((b) => b.enabled && (!options.brands?.length || options.brands.includes(b.key)));
   const sinceYear = new Date().getFullYear() - (settings.discovery.instrumentLookbackYears ?? 7);
 
   const summary: SweepSummary = { institutions: [], membersTagged: 0, classOneOwners: [], rescored: 0 };
@@ -84,6 +86,7 @@ export async function sweepInstruments(options: SweepOptions, ctx: JobContext, d
     const r: SweepSummary['institutions'][number] = { id, name: institution.name, authorsSeen: 0, membersTagged: 0, notOnRoster: 0, admitted: 0, declined: [], byBrand: {}, errors: [], budgetExhausted: false };
     summary.institutions.push(r);
     ctx.setStage(`${institution.name}: brand and model queries`, i / options.institutionIds.length);
+    ctx.log(`${institution.name}: querying ${brands.length} brand${brands.length === 1 ? '' : 's'} (${brands.map((b) => b.brand).join(', ')})${settings.discovery.identifyModels ? ' plus known models for brands with hits' : ''}`);
 
     const result = await fetchBrands([], sinceYear, {
       institutionIds: [id],
@@ -135,8 +138,15 @@ export async function sweepInstruments(options: SweepOptions, ctx: JobContext, d
     for (const [aid, u] of unknownAuthors) {
       ctx.checkpoint();
       const brandsSeen = [...new Set(u.instruments.map((x) => (x.model ? `${x.brand} ${x.model}` : x.brand)))];
+      // A bare brand name in a paper that does not read as electrochemistry is not enough to admit anyone.
+      const confirmed = confirmedInstruments(u.instruments);
+      if (confirmed.length === 0) {
+        r.declined.push({ name: u.name, reason: 'brand mention needs review (no model, not an electrochemistry paper)', brands: brandsSeen });
+        ctx.log(`${u.name}: sighted with ${brandsSeen.join(', ')} only in a paper that does not read as electrochemistry — not admitted`);
+        continue;
+      }
       try {
-        const res = await admit({ authorId: aid, institution: { openAlexId: id, name: institution.name }, instruments: u.instruments });
+        const res = await admit({ authorId: aid, institution: { openAlexId: id, name: institution.name }, instruments: confirmed });
         if (res.admitted && res.member) {
           r.admitted += 1;
           changedIds.add(res.member.id);
@@ -144,9 +154,12 @@ export async function sweepInstruments(options: SweepOptions, ctx: JobContext, d
           ctx.log(`ADMITTED ${res.member.person.name} (${res.member.role.category}, ${res.member.department.name ?? res.member.department.domain}) — ${brandsSeen.join(', ')}`);
         } else {
           r.declined.push({ name: res.name ?? u.name, reason: res.reason ?? 'declined', brands: brandsSeen });
+          ctx.log(`${res.name ?? u.name}: sighted with ${brandsSeen.join(', ')} but not on the roster — declined (${res.reason ?? 'declined'})`);
         }
       } catch (error) {
-        r.declined.push({ name: u.name, reason: error instanceof Error ? error.message : String(error), brands: brandsSeen });
+        const reason = error instanceof Error ? error.message : String(error);
+        r.declined.push({ name: u.name, reason, brands: brandsSeen });
+        ctx.log(`${u.name}: sighted with ${brandsSeen.join(', ')}, admit check failed — ${reason}`, 'warn');
       }
     }
     if (r.declined.length > 0) {
@@ -163,7 +176,10 @@ export async function sweepInstruments(options: SweepOptions, ctx: JobContext, d
       if (merged.some((x) => x.vendor === 'classone') && !summary.classOneOwners.includes(member.person.name)) {
         summary.classOneOwners.push(member.person.name);
       }
-      if (after === before) continue;
+      if (after === before) {
+        ctx.log(`${member.person.name}: seen again with the same instruments already on record — no change`);
+        continue;
+      }
       await repositories.faculty.updateById(member.id, { research: { instruments: merged }, tags: [...new Set([...member.tags, 'instruments-swept'])] });
       // A promoted member's lead gets the same sightings.
       if (member.leadId) {

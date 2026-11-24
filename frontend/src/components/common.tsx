@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { LeadStatus } from '../types';
+import type { FundingAcknowledgement, FundingAgency, LeadStatus } from '../types';
 
 const STATUS_LABELS: Record<LeadStatus, string> = {
   pending_review: 'Pending review',
@@ -86,6 +86,13 @@ export function AffiliationNote({
       </span>
     );
   }
+  if (affiliation.status === 'conflict') {
+    return (
+      <span className="badge badge-pending" title={title}>
+        needs review · sources disagree
+      </span>
+    );
+  }
   if (affiliation.status === 'unknown') {
     return (
       <span className="badge badge-rejected" title={title}>
@@ -157,4 +164,103 @@ export function ScorePill({ score }: { score?: number }) {
 
   const cls = score >= 70 ? 'badge-approved' : score >= 40 ? 'badge-pending' : 'badge-neutral';
   return <span className={`badge ${cls}`}>{score}</span>;
+}
+
+// ---------------------------------------------------------------------------
+// Funding (from paper acknowledgements)
+// ---------------------------------------------------------------------------
+
+/** Agencies the sales team tracks, in display order (mirrors backend services/funding). */
+export const FUNDING_AGENCIES: Array<{ key: Exclude<FundingAgency, 'other'>; label: string }> = [
+  { key: 'serb', label: 'SERB' },
+  { key: 'anrf', label: 'ANRF' },
+  { key: 'dst', label: 'DST' },
+  { key: 'dbt', label: 'DBT' },
+  { key: 'icmr', label: 'ICMR' },
+  { key: 'csir', label: 'CSIR' },
+  { key: 'birac', label: 'BIRAC' },
+];
+const AGENCY_LABEL: Record<string, string> = Object.fromEntries(FUNDING_AGENCIES.map((a) => [a.key, a.label]));
+
+/** SERB-PRISM: SERB/ANRF projects by file number (captcha-protected, so a person looks it up). */
+export const SERB_PRISM_URL = 'https://prism.serbonline.in/Search';
+
+/** Compact agency chips for a table cell: tracked agencies with their latest grant year. */
+export function FundingChips({ funding, checkedAt }: { funding?: FundingAcknowledgement[]; checkedAt?: string }) {
+  const tracked = (funding ?? []).filter((f) => f.agency !== 'other');
+  if (tracked.length === 0) {
+    return <span className="muted small" title={checkedAt ? 'No tracked agency acknowledged on recent papers' : 'Funding not checked yet'}>{checkedAt ? '—' : '·'}</span>;
+  }
+  const byAgency = new Map<string, number | undefined>();
+  for (const f of tracked) {
+    const y = f.year ?? undefined;
+    const prev = byAgency.get(f.agency);
+    byAgency.set(f.agency, prev === undefined ? y : y === undefined ? prev : Math.max(prev, y));
+  }
+  return (
+    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+      {FUNDING_AGENCIES.filter((a) => byAgency.has(a.key)).map((a) => {
+        const grants = tracked.filter((f) => f.agency === a.key);
+        const title = grants.map((g) => [g.scheme, g.year, g.awardId].filter(Boolean).join(' · ') || g.funder).join('\n');
+        const y = byAgency.get(a.key);
+        return (
+          <span key={a.key} className="tag" title={title}>
+            {a.label}
+            {y ? ` ’${String(y).slice(2)}` : ''}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Full list for a detail page, with the SERB-PRISM lookup for SERB/ANRF grant numbers. */
+export function FundingList({ funding, checkedAt }: { funding?: FundingAcknowledgement[]; checkedAt?: string }) {
+  if (!checkedAt && !(funding ?? []).length) {
+    return <p className="muted small" style={{ margin: 0 }}>Not checked yet — funding is read with the next scoring run or <code>npm --prefix backend run funding:refresh</code>.</p>;
+  }
+  const items = funding ?? [];
+  if (items.length === 0) {
+    return <p className="muted small" style={{ margin: 0 }}>No funder acknowledged on recent papers. About half of papers name none, so this is not evidence of no funding.</p>;
+  }
+  const copyAndOpen = (awardId: string) => {
+    void navigator.clipboard?.writeText(awardId).catch(() => undefined);
+    window.open(SERB_PRISM_URL, '_blank', 'noreferrer');
+  };
+  return (
+    <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'grid', gap: 10 }}>
+      {items.map((f, i) => (
+        <li key={`${f.agency}-${f.awardId ?? f.funder}-${i}`}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <strong>{f.agency === 'other' ? f.funder : AGENCY_LABEL[f.agency]}</strong>
+            {f.scheme && <span className="small">{f.scheme}</span>}
+            {f.year && <span className="badge badge-neutral">{f.year}</span>}
+            {f.awardId && <code className="small">{f.awardId}</code>}
+            {f.awardId && (f.agency === 'serb' || f.agency === 'anrf') && (
+              <button type="button" className="btn btn-sm" title="Copies the grant number and opens SERB-PRISM — paste it into the file-number search for the project title, status and sanctioned equipment" onClick={() => copyAndOpen(f.awardId!)}>
+                SERB-PRISM →
+              </button>
+            )}
+          </div>
+          <div className="muted small" style={{ marginTop: 2 }}>
+            {f.agency !== 'other' && f.funder !== AGENCY_LABEL[f.agency] && <>{f.funder} · </>}
+            acknowledged on {f.papers} recent paper{f.papers === 1 ? '' : 's'}
+            {f.workTitle && (
+              <>
+                , e.g.{' '}
+                {f.workUrl ? (
+                  <a href={f.workUrl.startsWith('http') ? f.workUrl : `https://doi.org/${f.workUrl}`} target="_blank" rel="noreferrer">
+                    {f.workTitle}
+                  </a>
+                ) : (
+                  f.workTitle
+                )}
+                {f.workYear ? ` (${f.workYear})` : ''}
+              </>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
 }

@@ -35,7 +35,7 @@ import type { AffiliationEvidence } from '../../types/domain.js';
 import { repositories, where, type Filter } from '../../repositories/index.js';
 import { ApiError } from '../../middleware/errorHandler.js';
 import type { Lead, LeadAffiliation } from '../../types/domain.js';
-import { expandInstitutionAbbreviations, normalizeInstitutionKey } from '../../utils/normalize.js';
+import { expandInstitutionAbbreviations, keyContains, normalizeInstitutionKey } from '../../utils/normalize.js';
 
 import { logActivity } from '../activity/activityService.js';
 
@@ -45,6 +45,13 @@ export const instKey = (name?: string) =>
 
 /** How long a verification stays fresh before a run re-checks a known lead. */
 export const AFFILIATION_TTL_DAYS = 30;
+
+/**
+ * A real researcher's latest paper names a handful of institutions at most. An OpenAlex author record
+ * whose latest work lists more than this is almost always several people merged under one common
+ * name (seen: 50–150 institutions on "Ajay Singh"), so a "current" verdict from it needs a person.
+ */
+export const MERGED_IDENTITY_INSTITUTIONS = 8;
 
 export interface AffiliationAssessment {
   status: LeadAffiliation['status'];
@@ -68,6 +75,16 @@ export function sameInstitution(
   const b = instKey(inst.name);
   if (!a || !b) return false;
   return a === b || a.includes(b) || b.includes(a);
+}
+
+/**
+ * True when free text (an ORCID role or department line) names the institute, e.g. a "Professor,
+ * CARE, IIT Delhi" employment filed under an umbrella organisation. Abbreviations are expanded first.
+ */
+export function textNamesInstitution(text: string | undefined, inst: { name?: string }): boolean {
+  const t = instKey(inst.name);
+  const k = instKey(text);
+  return Boolean(t && k && k.includes(t));
 }
 
 /** The OpenAlex id for an institute name we already know (our IIT/NIT/IIIT list). */
@@ -191,8 +208,9 @@ export function affiliationPatch(
   else unset.push('institution.openAlexId');
   if (a.institution.country) institution.country = a.institution.country;
 
-  // A department belongs to the institute; it does not follow a move.
-  if (a.status !== 'current') {
+  // A department belongs to the institute; it does not follow a move. (A conflict keeps the
+  // institute, so it keeps the department too.)
+  if (a.status !== 'current' && a.status !== 'conflict') {
     unset.push('institution.department');
     if (a.status === 'unknown') unset.push('institution.country');
   }
@@ -318,9 +336,15 @@ export function combineAffiliationEvidence(
   }
 
   // --- 2. ORCID: an employment the researcher has left open ---------------
+  let orcidElsewhere: { organization: string; startYear?: number; lastHere: number } | null = null;
   const current = (sources.orcid?.employments ?? []).filter((e) => e.current);
   if (current.length > 0) {
-    const here = current.find((e) => sameInstitution(leadInst, { name: e.organization }));
+    const here = current.find(
+      (e) =>
+        sameInstitution(leadInst, { name: e.organization }) ||
+        textNamesInstitution(e.department, leadInst) ||
+        textNamesInstitution(e.role, leadInst),
+    );
     if (here) {
       return decide('current', 'orcid', { name: lead.institutionName, openAlexId: lead.institutionOpenAlexId }, {
         directoryListed: reg?.directory_checked ? Boolean(reg.directory_listed) : undefined,
@@ -334,7 +358,12 @@ export function combineAffiliationEvidence(
     const ours = oa?.affiliations.find((a) => sameInstitution(leadInst, a));
     const lastHere = ours ? Math.max(...ours.years, 0) : 0;
     const orcidSaysStaleHere = newest.startYear !== undefined && lastHere > newest.startYear;
-    if (!orcidSaysStaleHere) {
+    if (orcidSaysStaleHere) {
+      // Not settled either way: either ORCID is out of date (they moved here and never updated it),
+      // or the OpenAlex record merges a different person with the same name. Step 3 decides
+      // whether the paper places them here; if it does, the result is a conflict for a person to check.
+      orcidElsewhere = { organization: newest.organization, startYear: newest.startYear, lastHere };
+    } else {
       return decide('moved', 'orcid', { name: newest.organization, openAlexId: knownInstitutionId(newest.organization) }, {
         previousInstitution: lead.institutionName,
         previousInstitutionOpenAlexId: lead.institutionOpenAlexId,
@@ -349,6 +378,29 @@ export function combineAffiliationEvidence(
   if (sources.openalex) {
     const oa = assessAffiliation(lead, sources.openalex, now);
     const directoryListed = reg?.directory_checked ? Boolean(reg.directory_listed) : undefined;
+    if (oa.status === 'current') {
+      const keep = { name: lead.institutionName, openAlexId: lead.institutionOpenAlexId };
+      const lastKnownCount = sources.openalex.lastKnown.length;
+      if (orcidElsewhere) {
+        return decide('conflict', 'orcid', keep, {
+          lastSeenYear: orcidElsewhere.lastHere || undefined,
+          directoryListed,
+          note:
+            `ORCID lists a current employment only at ${orcidElsewhere.organization}` +
+            `${orcidElsewhere.startYear ? ` (since ${orcidElsewhere.startYear})` : ''}, but the latest paper ` +
+            `${orcidElsewhere.lastHere ? `(${orcidElsewhere.lastHere}) ` : ''}still names ${lead.institutionName ?? 'the institute'}. ` +
+            'Either ORCID is out of date or this is a different person with the same name — check before relying on it.',
+        });
+      }
+      if (lastKnownCount > MERGED_IDENTITY_INSTITUTIONS) {
+        return decide('conflict', 'openalex', keep, {
+          directoryListed,
+          note:
+            `The latest indexed work lists ${lastKnownCount} institutions for this author — the OpenAlex record ` +
+            'probably merges several people with the same name. Check the person before relying on it.',
+        });
+      }
+    }
     return {
       ...oa,
       affiliation: {
@@ -376,7 +428,7 @@ function directoryUrlsFor(institutionName: string | undefined, settings: AppSett
     .filter((t) => t.enabled)
     .filter((t) => {
       const tk = instKey(t.universityName);
-      return Boolean(tk && (tk === key || tk.includes(key) || key.includes(tk)));
+      return Boolean(tk && (tk === key || keyContains(tk, key) || keyContains(key, tk)));
     })
     .map((t) => t.url);
 }
@@ -486,6 +538,8 @@ export interface BulkVerifyResult {
   current: number;
   moved: number;
   unknown: number;
+  /** Sources disagree (see `LeadAffiliation.status`): kept at the institute, flagged for a person. */
+  conflict: number;
   skipped: number;
 }
 
@@ -509,7 +563,7 @@ export async function verifyAffiliations(
     options: { limit: Math.min(params.limit ?? 500, 2000), sort: { 'institution.affiliation.verifiedAt': 1 } },
   });
 
-  const out: BulkVerifyResult = { checked: 0, current: 0, moved: 0, unknown: 0, skipped: 0 };
+  const out: BulkVerifyResult = { checked: 0, current: 0, moved: 0, unknown: 0, conflict: 0, skipped: 0 };
   for (const lead of leads) {
     if (!openAlexAuthorIdOf(lead) && !lead.person.orcid && !params.deep) {
       out.skipped += 1;
@@ -524,6 +578,7 @@ export async function verifyAffiliations(
       out.checked += 1;
       if (assessment.status === 'current') out.current += 1;
       else if (assessment.status === 'moved') out.moved += 1;
+      else if (assessment.status === 'conflict') out.conflict += 1;
       else out.unknown += 1;
     } catch {
       out.skipped += 1;

@@ -15,29 +15,41 @@ import { createHash } from 'node:crypto';
 import { env } from '../../config/env.js';
 import type { Lead, Product } from '../../types/domain.js';
 import type { DiscoveredCandidate } from '../discovery/types.js';
+import { GeminiProvider } from './geminiProvider.js';
 import { HeuristicProvider } from './heuristicProvider.js';
+import { JevProvider } from './jevProvider.js';
 import { OpenAiProvider } from './openAiProvider.js';
-import type { AiProvider, EnrichmentResult } from './types.js';
+import type { AiProvider, EnrichmentResult, ScoringFocus } from './types.js';
 
 let cachedProvider: AiProvider | null = null;
 
+/** A key that is empty, or is still one of the repo's own placeholder strings. */
+function isUnsetKey(key: string | undefined): boolean {
+  return !key?.trim() || ['sk-REPLACE_ME', 'REPLACE_ME'].includes(key.trim());
+}
+
 /**
- * Returns the configured provider.
- *
- * Falling back to the heuristic rather than throwing is deliberate: discovery
- * staying functional (and free) without a key is more useful than a hard failure,
- * and it makes the pipeline testable end to end.
+ * Returns the configured provider: Jev first (cheapest, typed decisions — see
+ * `jevProvider.ts`), then OpenAI, then Gemini (free-tier experiment), then the
+ * free heuristic. Falling back rather than throwing is deliberate: discovery
+ * staying functional (and free) without any key is more useful than a hard
+ * failure, and it makes the pipeline testable end to end.
  */
 export function getAiProvider(): AiProvider {
   if (cachedProvider) return cachedProvider;
 
-  const key = env.OPENAI_API_KEY?.trim();
-  if (key && key !== 'sk-REPLACE_ME') {
-    cachedProvider = new OpenAiProvider(key, env.OPENAI_MODEL_CHEAP);
+  if (!isUnsetKey(env.JEV_API_KEY)) {
+    cachedProvider = new JevProvider(env.JEV_API_KEY!.trim(), env.JEV_MODEL);
+    console.log(`[ai] using Jev (${env.JEV_MODEL})`);
+  } else if (!isUnsetKey(env.OPENAI_API_KEY)) {
+    cachedProvider = new OpenAiProvider(env.OPENAI_API_KEY!.trim(), env.OPENAI_MODEL_CHEAP);
     console.log(`[ai] using OpenAI (${env.OPENAI_MODEL_CHEAP})`);
+  } else if (!isUnsetKey(env.GEMINI_API_KEY)) {
+    cachedProvider = new GeminiProvider(env.GEMINI_API_KEY!.trim(), env.GEMINI_MODEL);
+    console.log(`[ai] using Gemini free tier (${env.GEMINI_MODEL})`);
   } else {
     cachedProvider = new HeuristicProvider();
-    console.log('[ai] no OPENAI_API_KEY set — using the free keyword heuristic');
+    console.log('[ai] no JEV_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY set — using the free keyword heuristic');
   }
 
   return cachedProvider;
@@ -104,10 +116,15 @@ export class BudgetExceededError extends Error {
  * Checked BEFORE each call rather than after, so the limit cannot be overshot by
  * a large final request.
  */
+/** The budget ceiling for whichever billable provider is actually active. */
+function defaultRunBudgetUsd(): number {
+  return getAiProvider() instanceof JevProvider ? env.JEV_RUN_BUDGET_USD : env.OPENAI_RUN_BUDGET_USD;
+}
+
 export class BudgetTracker {
   private spent = 0;
 
-  constructor(private readonly limitUsd: number = env.OPENAI_RUN_BUDGET_USD) {}
+  constructor(private readonly limitUsd: number = defaultRunBudgetUsd()) {}
 
   get spentUsd(): number {
     return this.spent;
@@ -128,6 +145,8 @@ export interface EnrichOptions {
   catalog: Product[];
   budget: BudgetTracker;
   provider?: AiProvider;
+  /** A pipeline run's keyword override (see services/roster/applicationAreas). */
+  focus?: ScoringFocus;
 }
 
 /** Enriches one candidate, respecting the budget guard. */
@@ -141,8 +160,32 @@ export async function enrichCandidate(
     options.budget.assertWithinBudget();
   }
 
-  const result = await provider.enrich({ candidate, catalog: options.catalog });
+  const result = await provider.enrich({ candidate, catalog: options.catalog, focus: options.focus });
   options.budget.record(result.costUsd);
 
   return result;
+}
+
+/**
+ * Enriches several candidates — in one call when the provider can batch
+ * (Gemini), otherwise one at a time. One entry per candidate, in order; a
+ * failure is an Error in that slot, so one bad candidate never loses the rest.
+ */
+export async function enrichCandidates(
+  candidates: DiscoveredCandidate[],
+  options: EnrichOptions,
+): Promise<Array<EnrichmentResult | Error>> {
+  const provider = options.provider ?? getAiProvider();
+  const asError = (e: unknown) => (e instanceof Error ? e : new Error(String(e)));
+  if (provider.enrichBatch && candidates.length > 1) {
+    if (provider.billable) options.budget.assertWithinBudget();
+    const results = await provider
+      .enrichBatch(candidates.map((candidate) => ({ candidate, catalog: options.catalog, focus: options.focus })))
+      .catch((e: unknown) => candidates.map(() => asError(e)));
+    for (const r of results) if (!(r instanceof Error)) options.budget.record(r.costUsd);
+    return results;
+  }
+  const out: Array<EnrichmentResult | Error> = [];
+  for (const candidate of candidates) out.push(await enrichCandidate(candidate, { ...options, provider }).catch(asError));
+  return out;
 }

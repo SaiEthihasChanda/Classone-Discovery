@@ -25,6 +25,8 @@ import {
 
 export interface RosterVerifyOptions {
   ids?: string[];
+  /** Restrict to members discovered at these institutes — bounds the pass when the pipeline runs one institute at a time. */
+  institutionIds?: string[];
   /** Skip members verified within this many days. Default 30; 0 = re-check all. */
   freshDays?: number;
   limit?: number;
@@ -42,10 +44,17 @@ export interface RosterVerifySummary {
   outsideTarget: number;
   unknown: number;
   unverified: number;
+  /** Sources disagree (ORCID elsewhere, or a merged OpenAlex identity): kept, flagged for a person. */
+  conflict: number;
   skipped: number;
 }
 
 const TARGET_IDS = new Set(INDIAN_INSTITUTIONS.map((i) => i.openAlexId));
+
+function formatAge(verifiedAt: Date | string): string {
+  const days = Math.floor((Date.now() - new Date(verifiedAt).getTime()) / (24 * 3600 * 1000));
+  return days <= 0 ? '<1 day' : `${days} day${days === 1 ? '' : 's'}`;
+}
 
 function isTarget(inst: { name?: string; openAlexId?: string }): boolean {
   if (inst.openAlexId && TARGET_IDS.has(inst.openAlexId)) return true;
@@ -120,9 +129,10 @@ export async function verifyRoster(
   const freshDays = options.freshDays ?? 30;
   const filter: Filter = [where.in('status', ['eligible', 'promoted'])];
   if (options.ids?.length) filter.push(where.in('_id', options.ids));
+  if (options.institutionIds?.length) filter.push(where.in('institution.discoveredOpenAlexId', options.institutionIds));
   const members = await repositories.faculty.find({ filter, options: { limit: options.limit ?? 100_000, sort: { createdAt: 1 } } });
 
-  const summary: RosterVerifySummary = { checked: 0, current: 0, moved: 0, outsideTarget: 0, unknown: 0, unverified: 0, skipped: 0 };
+  const summary: RosterVerifySummary = { checked: 0, current: 0, moved: 0, outsideTarget: 0, unknown: 0, unverified: 0, conflict: 0, skipped: 0 };
   const cutoff = Date.now() - freshDays * 24 * 3600 * 1000;
 
   for (const [i, member] of members.entries()) {
@@ -136,30 +146,41 @@ export async function verifyRoster(
       member.institution.affiliation?.status !== 'unverified'
     ) {
       summary.skipped += 1;
+      ctx.log(`${member.person.name}: skipped — verified ${formatAge(verifiedAt)} ago, inside the ${freshDays}-day freshness window`);
       continue;
     }
     if (!member.person.openAlexAuthorId && !member.person.orcid) {
       summary.skipped += 1;
+      ctx.log(`${member.person.name}: skipped — no ORCID or OpenAlex id to check against`);
       continue;
     }
     try {
       const { member: after, status } = await verifyMember(member, deps);
       summary.checked += 1;
-      if (status === 'current') summary.current += 1;
-      else if (status === 'moved') {
+      if (status === 'current') {
+        summary.current += 1;
+        ctx.log(`${member.person.name}: current at ${after.institution.name ?? member.institution.discoveredName} (via ${after.institution.affiliation?.source ?? 'unknown source'})`);
+      } else if (status === 'moved') {
         summary.moved += 1;
         if (after.institution.outsideTarget) summary.outsideTarget += 1;
         ctx.log(`${member.person.name}: moved ${member.institution.discoveredName} → ${after.institution.name ?? '?'}${after.institution.outsideTarget ? ' (outside target list)' : ''}`);
+      } else if (status === 'conflict') {
+        summary.conflict += 1;
+        ctx.log(`${member.person.name}: NEEDS REVIEW — ${after.institution.affiliation?.note ?? 'sources disagree'}`, 'warn');
       } else if (status === 'unknown') {
         summary.unknown += 1;
         ctx.log(`${member.person.name}: no current institute could be established — blanked`, 'warn');
-      } else summary.unverified += 1;
+      } else {
+        summary.unverified += 1;
+        ctx.log(`${member.person.name}: unverified — neither ORCID nor OpenAlex confirmed or denied ${member.institution.discoveredName ?? 'the discovered institute'}`);
+      }
     } catch (error) {
       ctx.log(`${member.person.name}: ${error instanceof Error ? error.message : String(error)}`, 'warn');
     }
     ctx.set('checked', summary.checked);
     ctx.set('moved', summary.moved);
     ctx.set('unknown', summary.unknown);
+    ctx.set('conflict', summary.conflict);
   }
   return summary;
 }

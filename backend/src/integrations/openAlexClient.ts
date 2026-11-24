@@ -14,7 +14,8 @@ import mongoose from 'mongoose';
 import { env } from '../config/env.js';
 import { OpenAlexCacheModel } from '../models/openAlexCache.model.js';
 import type { DiscoveredCandidate } from '../services/discovery/types.js';
-import type { LeadPublication } from '../types/domain.js';
+import type { FundingAcknowledgement, LeadPublication } from '../types/domain.js';
+import { summariseFunding } from '../services/funding/fundingAgencies.js';
 import {
   hasBudgetFor,
   markExhausted,
@@ -180,6 +181,9 @@ interface OpenAlexWork {
   authorships?: OpenAlexAuthorship[];
   topics?: { display_name?: string }[];
   abstract_inverted_index?: Record<string, number[]>;
+  /** Funders the paper thanks, and the grant numbers it prints (see services/funding). */
+  funders?: Array<{ id?: string; display_name?: string }>;
+  awards?: Array<{ funder_id?: string; funder_display_name?: string; funder_award_id?: string; display_name?: string }>;
 }
 
 interface OpenAlexResponse {
@@ -900,6 +904,8 @@ export interface AuthorRecentWorks {
   topics: string[];
   /** Titles plus the first few abstracts — what the relevance scorer reads. */
   evidenceText: string;
+  /** Funders and grant numbers the papers acknowledge (same call, no extra credit). */
+  funding?: FundingAcknowledgement[];
 }
 
 /**
@@ -920,11 +926,13 @@ export async function getAuthorRecentWorks(params: {
   );
   url.searchParams.set('per-page', String(Math.min(params.maxWorks ?? 25, MAX_PAGE_SIZE)));
   url.searchParams.set('sort', 'publication_year:desc');
-  url.searchParams.set('select', 'id,doi,title,publication_year,topics,abstract_inverted_index');
+  // funders/awards ride on the same call: OpenAlex bills per call, not per field.
+  url.searchParams.set('select', 'id,doi,title,publication_year,topics,abstract_inverted_index,funders,awards');
   if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
 
   const data = await fetchOpenAlex<OpenAlexResponse>(url.toString());
   const works = (data.results ?? []).filter((w) => w.title);
+  const funding = summariseFunding(works);
   const publications = works.map((w) => ({
     title: w.title!,
     year: w.publication_year,
@@ -957,7 +965,28 @@ export async function getAuthorRecentWorks(params: {
       .filter(Boolean)
       .join(' ')
       .slice(0, 3000),
+    funding,
   };
+}
+
+/**
+ * Only the funding acknowledgements on one author's recent papers — the same filter-only works call
+ * (1 credit) with a slim select. Backs the one-off funding backfill for people scored before
+ * funding was recorded; the relevance pass gets funding from `getAuthorRecentWorks` instead.
+ */
+export async function getAuthorFunding(params: { authorId: string; sinceYear: number; maxWorks?: number }): Promise<FundingAcknowledgement[]> {
+  const id = params.authorId.split('/').pop()!;
+  const url = new URL(`${BASE_URL}/works`);
+  url.searchParams.set(
+    'filter',
+    [`authorships.author.id:${id}`, `publication_year:>${params.sinceYear - 1}`, 'is_paratext:false'].join(','),
+  );
+  url.searchParams.set('per-page', String(Math.min(params.maxWorks ?? 25, MAX_PAGE_SIZE)));
+  url.searchParams.set('sort', 'publication_year:desc');
+  url.searchParams.set('select', 'id,doi,title,publication_year,funders,awards');
+  if (env.OPENALEX_MAILTO) url.searchParams.set('mailto', env.OPENALEX_MAILTO);
+  const data = await fetchOpenAlex<OpenAlexResponse>(url.toString());
+  return summariseFunding((data.results ?? []).filter((w) => w.title));
 }
 
 /**

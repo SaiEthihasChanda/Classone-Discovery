@@ -9,6 +9,10 @@ import { discoveryRouter } from './discovery.routes.js';
 import { settingsRouter } from './settings.routes.js';
 import { adminRouter } from './admin.routes.js';
 import { rosterRouter } from './roster.routes.js';
+import { pipelineRouter } from './pipeline.routes.js';
+import { threadsRouter } from './threads.routes.js';
+import { usersRouter } from './users.routes.js';
+import { authenticate, authorize } from '../middleware/auth.js';
 
 export const apiRouter = Router();
 
@@ -43,6 +47,14 @@ apiRouter.get(
   }),
 );
 
+// Everything below /health needs a sign-in. /me answers even a "pending" user,
+// so the UI can tell them they are waiting for access.
+apiRouter.get('/me', authenticate, (req, res) => {
+  res.json({ ...req.user, authEnabled: env.authEnabled });
+});
+apiRouter.use(authenticate, authorize);
+
+apiRouter.use('/users', usersRouter);
 apiRouter.use('/leads', leadsRouter);
 apiRouter.use('/catalog', catalogRouter);
 apiRouter.use('/dashboard', dashboardRouter);
@@ -50,3 +62,5 @@ apiRouter.use('/discovery', discoveryRouter);
 apiRouter.use('/settings', settingsRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use('/roster', rosterRouter);
+apiRouter.use('/pipeline', pipelineRouter);
+apiRouter.use('/threads', threadsRouter);

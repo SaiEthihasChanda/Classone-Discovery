@@ -1,0 +1,27 @@
+# Filled in by deploy/setup.sh into /etc/caddy/Caddyfile.
+# One site: the built frontend, with /api passed to the Node backend. HTTPS certificates are
+# obtained and renewed automatically for the site address.
+{{SITE_ADDRESS}} {
+	encode gzip
+
+	{{AUTH_BLOCK}}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:4000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		root * /opt/classone/app/frontend/dist
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/classone.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

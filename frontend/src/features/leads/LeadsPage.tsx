@@ -1,20 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, type BrandOption, type LeadListParams } from '../../api/client';
 import { useAsync } from '../../hooks/useAsync';
-import {
-  AffiliationNote,
-  EmptyState,
-  ErrorBanner,
-  InstrumentBadge,
-  Loading,
-  ScorePill,
-  SourceBadge,
-  StatusBadge,
-  formatDate,
-} from '../../components/common';
+import { EmptyState, ErrorBanner, InstrumentBadge, Loading, ScorePill, StatusBadge, shortInstitute } from '../../components/common';
+import { Icon, Segmented } from '../../components/ui';
+import { useAuth } from '../../auth/AuthProvider';
+import { LeadRecord } from './LeadRecord';
+import { AnimatePresence, cardMotion, motion } from '../../components/motion';
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 24;
 
 /** Hands a blob to the browser as a file download. */
 function saveBlob(blob: Blob, filename: string) {
@@ -108,322 +102,275 @@ function groupByBrand(
   return out;
 }
 
+type StatusKey = 'pending_review' | 'approved' | 'customer' | 'rejected' | 'all';
+
+const STATUS_TABS: Array<{ key: StatusKey; label: string }> = [
+  { key: 'pending_review', label: 'To review' },
+  { key: 'approved', label: 'Approved' },
+  { key: 'customer', label: 'Customers' },
+  { key: 'rejected', label: 'Rejected' },
+  { key: 'all', label: 'All' },
+];
+
+/**
+ * Every lead as a grid of compact cards — the review queue is just the "To
+ * review" view. Clicking a card opens the record in a side panel
+ * (`?open=<id>`), so the grid stays in place while you work through leads.
+ */
 export function LeadsPage() {
+  const { can } = useAuth();
+  const [params, setParams] = useSearchParams();
+  const openId = params.get('open');
+  const status = (params.get('status') as StatusKey | null) ?? 'pending_review';
+
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [status, setStatus] = useState('');
   const [brands, setBrands] = useState<string[]>([]);
-  const [sortBy, setSortBy] = useState<'createdAt' | 'score' | 'name'>('createdAt');
+  const [minScore, setMinScore] = useState(0);
+  const [sortBy, setSortBy] = useState<'createdAt' | 'score' | 'name'>('score');
   const [page, setPage] = useState(0);
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
-  const [enriching, setEnriching] = useState(false);
-  const [enrichNote, setEnrichNote] = useState<string | null>(null);
-  const [verifying, setVerifying] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  /** Re-check "still at this institute?" for everything matching the filter. Free. */
-  async function verifyAffiliationsNow() {
-    if (!data) return;
-    if (
-      !window.confirm(
-        `Re-check the current institute of all ${data.total} lead${data.total === 1 ? '' : 's'} matching this filter?\n\n` +
-          'Uses free OpenAlex and ORCID lookups — no credits. A lead found to have moved shows its new institute; one that cannot be placed shows none.',
-      )
-    ) {
-      return;
-    }
-    const deep = window.confirm(
-      'Also consult the institute directory and the IRINS/Vidwan registries?\n\n' +
-        'Most current sources, but page fetches via the scraper service — roughly 20-60 seconds per lead. OK = yes, Cancel = free lookups only.',
-    );
-    setVerifying(true);
-    setEnrichNote(null);
-    setExportError(null);
-    try {
-      const r = await api.verifyAffiliations({
-        ...(status ? { status } : {}),
-        ...(brands.length > 0 ? { brands } : {}),
-        limit: deep ? 100 : 2000,
-        deep,
-      });
-      setEnrichNote(
-        `Checked ${r.checked}: ${r.current} still there, ${r.moved} moved, ${r.unknown} could not be placed (institute cleared)` +
-          (r.skipped > 0 ? `; ${r.skipped} skipped (no OpenAlex record).` : '.'),
-      );
-      reload();
-    } catch (err) {
-      setExportError(err instanceof Error ? err.message : 'Verification failed');
-    } finally {
-      setVerifying(false);
-    }
-  }
+  const setQuery = (patch: Record<string, string | null>) => {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) (v === null ? next.delete(k) : next.set(k, v));
+    setParams(next, { replace: true });
+  };
 
-  /** Web enrichment for the leads on this page — sequential, a few minutes at most. */
-  async function enrichVisible() {
-    if (!data || data.items.length === 0) return;
-    const ids = data.items.map((l) => l.id);
-    if (
-      !window.confirm(
-        `Read institute profile pages, lab websites and open-access papers for the ${ids.length} lead${ids.length === 1 ? '' : 's'} on this page?\n\n` +
-          'Fills only blank fields. Uses the scraper service, not OpenAlex credits. Roughly 20-40 seconds per lead.',
-      )
-    ) {
-      return;
-    }
-    setEnriching(true);
-    setEnrichNote(null);
-    setExportError(null);
-    try {
-      const { results } = await api.enrichLeadsFromWeb(ids);
-      const ok = results.filter((r) => !r.error);
-      const emails = ok.filter((r) => r.filled?.includes('email')).length;
-      const withInst = ok.filter((r) => (r.instruments?.length ?? 0) > 0).length;
-      const failed = results.filter((r) => r.error);
-      setEnrichNote(
-        `${ok.length} enriched — ${emails} new email${emails === 1 ? '' : 's'}, ${withInst} with instruments found.` +
-          (failed.length > 0 ? ` ${failed.length} failed: ${failed[0]!.error}` : ''),
-      );
-      reload();
-    } catch (err) {
-      setExportError(err instanceof Error ? err.message : 'Enrichment failed');
-    } finally {
-      setEnriching(false);
-    }
-  }
-
-  const { data: brandOptions } = useAsync(() => api.leadBrandOptions(), []);
-
-  // Debounced so a request is not fired on every keystroke.
   useEffect(() => {
-    const id = setTimeout(() => {
+    const t = setTimeout(() => {
       setDebouncedSearch(search);
       setPage(0);
     }, 300);
-    return () => clearTimeout(id);
+    return () => clearTimeout(t);
   }, [search]);
 
-  // The filters as sent to the API — shared by the list and the CSV export, so
-  // "download what I am looking at" is exactly that.
   const filters: LeadListParams = {
     search: debouncedSearch || undefined,
-    status: status || undefined,
+    status: status === 'all' ? undefined : status,
     brands: brands.length > 0 ? brands : undefined,
+    minScore: minScore > 0 ? minScore : undefined,
     sortBy,
     sortDir: sortBy === 'name' ? 'asc' : 'desc',
   };
-  const brandsKey = brands.join(',');
 
+  const { data: brandOptions } = useAsync(() => api.leadBrandOptions(), []);
+  const { data: catalog } = useAsync(() => api.listProducts(), []);
+  const productName = new Map((catalog?.items ?? []).flatMap((p) => [[p.productId, p.name] as const, [p.id, p.name] as const]));
   const { data, loading, error, reload } = useAsync(
     () => api.listLeads({ ...filters, limit: PAGE_SIZE, skip: page * PAGE_SIZE }),
-    [debouncedSearch, status, brandsKey, sortBy, page],
+    [debouncedSearch, status, brands.join(','), minScore, sortBy, page],
   );
+  // Counts for the status tabs — one tiny request each.
+  const { data: counts, reload: reloadCounts } = useAsync(async () => {
+    const keys = ['pending_review', 'approved', 'customer', 'rejected'] as const;
+    const results = await Promise.all(keys.map((s) => api.listLeads({ status: s, limit: 1 })));
+    const out: Record<string, number> = {};
+    keys.forEach((k, i) => (out[k] = results[i]!.total));
+    out.all = Object.values(out).reduce((a, b) => a + b, 0);
+    return out;
+  }, []);
 
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
-  const hasFilters = Boolean(debouncedSearch || status || brands.length > 0);
+  const refresh = () => {
+    reload();
+    reloadCounts();
+  };
+
+  async function decide(id: string, decision: 'approved' | 'rejected') {
+    let reason: string | undefined;
+    if (decision === 'rejected') reason = window.prompt('Reason for rejecting? (optional)') ?? undefined;
+    setBusy(id);
+    setActionError(null);
+    try {
+      await api.reviewLead(id, decision, reason);
+      refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not record the decision');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function approveAll() {
+    if (!data) return;
+    const scope = minScore > 0 ? ` scoring ${minScore}+` : '';
+    if (!window.confirm(`Approve all ${data.total} lead${data.total === 1 ? '' : 's'} waiting for review${scope}?\n\nApproved leads become eligible for outreach.`)) return;
+    setBusy('bulk');
+    setActionError(null);
+    try {
+      const r = await api.bulkReview({ decision: 'approved', ...(minScore > 0 ? { minScore } : {}) });
+      setNote(`Approved ${r.updated} lead${r.updated === 1 ? '' : 's'}.`);
+      refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Bulk approval failed');
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function exportCsv() {
-    setExporting(true);
-    setExportError(null);
+    setBusy('export');
     try {
       const { blob, filename } = await api.exportLeadsCsv(filters);
       saveBlob(blob, filename);
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : 'Export failed');
+      setActionError(err instanceof Error ? err.message : 'Export failed');
     } finally {
-      setExporting(false);
+      setBusy(null);
     }
   }
+
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
   return (
     <>
       <div className="page-header">
         <div>
-          <h1>Leads / CRM</h1>
-          <p>One record per prospect — contact details, research, score and thread history.</p>
+          <h1>Leads</h1>
+          <p>Researchers promoted from Prospects. Review them, then reach out from the lead itself.</p>
         </div>
-        <Link className="btn btn-primary" to="/leads/new">
-          + Add lead
-        </Link>
+        <div className="page-actions">
+          <button className="btn" onClick={exportCsv} disabled={busy === 'export' || !data?.total}>
+            Export CSV
+          </button>
+          {can('sales') && (
+            <Link className="btn btn-primary" to="/leads/new">
+              <Icon name="plus" size={16} /> Add lead
+            </Link>
+          )}
+        </div>
+      </div>
+
+      <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+        <Segmented
+          items={STATUS_TABS.map((t) => ({ ...t, count: counts?.[t.key] }))}
+          value={status}
+          onChange={(k) => {
+            setQuery({ status: k });
+            setPage(0);
+          }}
+        />
+        {status === 'pending_review' && can('sales') && data && data.total > 0 && (
+          <button className="btn btn-success btn-sm" onClick={approveAll} disabled={busy === 'bulk'}>
+            {busy === 'bulk' ? 'Approving…' : `Approve all ${data.total}${minScore > 0 ? ` (${minScore}+)` : ''}`}
+          </button>
+        )}
       </div>
 
       <div className="toolbar">
-        <input
-          placeholder="Search name, email or institution…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ minWidth: 280 }}
-        />
-        <select
-          value={status}
-          onChange={(e) => {
-            setStatus(e.target.value);
-            setPage(0);
-          }}
-        >
-          <option value="">All statuses</option>
-          <option value="pending_review">Pending review</option>
-          <option value="approved">Approved</option>
-          <option value="rejected">Rejected</option>
-          <option value="customer">Customer</option>
+        <input className="search" placeholder="Search name, email or institution" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select value={minScore} onChange={(e) => { setMinScore(Number(e.target.value)); setPage(0); }} style={{ minWidth: 140 }}>
+          <option value={0}>Any score</option>
+          <option value={40}>Score 40+</option>
+          <option value={60}>Score 60+</option>
+          <option value={70}>Score 70+</option>
         </select>
-        <BrandFilter
-          options={brandOptions?.items ?? []}
-          selected={brands}
-          onChange={(next) => {
-            setBrands(next);
-            setPage(0);
-          }}
-        />
-        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
-          <option value="createdAt">Newest first</option>
+        <BrandFilter options={brandOptions?.items ?? []} selected={brands} onChange={(next) => { setBrands(next); setPage(0); }} />
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} style={{ minWidth: 150 }}>
           <option value="score">Highest score</option>
-          <option value="name">Name (A–Z)</option>
+          <option value="createdAt">Newest first</option>
+          <option value="name">Name A–Z</option>
         </select>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}>
-          {data && (
-            <span className="muted small">
-              {data.total} lead{data.total === 1 ? '' : 's'}
-            </span>
-          )}
-          <button
-            className="btn btn-sm"
-            onClick={verifyAffiliationsNow}
-            disabled={verifying || !data || data.total === 0}
-            title="Re-check whether each lead is still at their institute (free OpenAlex lookups)"
-          >
-            {verifying ? 'Verifying…' : 'Verify affiliations'}
-          </button>
-          <button
-            className="btn btn-sm"
-            onClick={enrichVisible}
-            disabled={enriching || !data || data.items.length === 0}
-            title="Profile page, lab website and open-access papers for the leads on this page — fills blank emails, titles and instruments"
-          >
-            {enriching ? 'Enriching…' : `Enrich this page from web${data ? ` (${data.items.length})` : ''}`}
-          </button>
-          <button
-            className="btn btn-sm"
-            onClick={exportCsv}
-            disabled={exporting || !data || data.total === 0}
-            title="Download every lead matching the current filters"
-          >
-            {exporting ? 'Preparing…' : `Download CSV${data ? ` (${data.total})` : ''}`}
-          </button>
-        </div>
       </div>
 
-      {exportError && <ErrorBanner message={exportError} />}
-      {enrichNote && <div className="alert alert-success">{enrichNote}</div>}
+      {note && <div className="alert alert-success">{note}</div>}
+      {actionError && <ErrorBanner message={actionError} />}
       {error && <ErrorBanner message={error} />}
       {loading && !data && <Loading />}
 
       {data && data.items.length === 0 && (
-        <EmptyState>
-          {hasFilters ? (
-            <>No leads match these filters.</>
-          ) : (
-            <>
-              No leads yet. <Link to="/leads/new">Add your first lead</Link> to get started.
-            </>
-          )}
-        </EmptyState>
+        <div className="card">
+          <EmptyState>{status === 'pending_review' ? 'Nothing waiting for review.' : 'No leads match.'}</EmptyState>
+        </div>
       )}
 
       {data && data.items.length > 0 && (
-        <>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Institution</th>
-                  <th>Email</th>
-                  <th>Score</th>
-                  <th>Instruments</th>
-                  <th>Status</th>
-                  <th>Source</th>
-                  <th>Added</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.items.map((lead) => (
-                  <tr key={lead.id}>
-                    <td>
-                      <Link to={`/leads/${lead.id}`}>
-                        <strong>{lead.person.name}</strong>
-                      </Link>
-                      {lead.person.title && (
-                        <div className="muted small">{lead.person.title}</div>
-                      )}
-                    </td>
-                    <td>
-                      {lead.institution.name ?? <span className="muted">—</span>}
-                      {lead.institution.department && (
-                        <div className="muted small">{lead.institution.department}</div>
-                      )}
-                      <AffiliationNote
-                        affiliation={lead.institution.affiliation}
-                        institutionName={lead.institution.name}
-                      />
-                    </td>
-                    <td className="small">
-                      {lead.person.email ?? <span className="muted">—</span>}
-                    </td>
-                    <td>
-                      <ScorePill score={lead.aiScoring.relevanceScore} />
-                    </td>
-                    <td>
-                      {(lead.research.instruments ?? []).length === 0 ? (
-                        <span className="muted">—</span>
-                      ) : (
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                          {groupByBrand(lead.research.instruments ?? []).map((inst) => (
-                            <InstrumentBadge
-                              key={inst.brandKey}
-                              vendor={inst.vendor}
-                              brand={inst.brand}
-                              model={inst.models.join(' / ') || undefined}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                    <td>
-                      <StatusBadge status={lead.status} />
-                    </td>
-                    <td>
-                      <SourceBadge source={lead.source.type} />
-                    </td>
-                    <td className="small muted">{formatDate(lead.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {totalPages > 1 && (
-            <div className="pagination">
-              <button
-                className="btn btn-sm"
-                disabled={page === 0}
-                onClick={() => setPage((p) => p - 1)}
+        <div className="lead-grid">
+          <AnimatePresence mode="popLayout" initial={false}>
+          {data.items.map((lead) => {
+            const instruments = groupByBrand(lead.research.instruments ?? []);
+            const product = lead.aiScoring.recommendedProductIds.map((pid) => productName.get(pid)).find(Boolean);
+            const open = () => setQuery({ open: lead.id });
+            return (
+              <motion.article
+                key={lead.id}
+                {...cardMotion}
+                className={`lead-card${openId === lead.id ? ' selected' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={open}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    open();
+                  }
+                }}
               >
-                Previous
-              </button>
-              <span className="muted">
-                Page {page + 1} of {totalPages}
-              </span>
-              <button
-                className="btn btn-sm"
-                disabled={page + 1 >= totalPages}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next
-              </button>
-            </div>
-          )}
-        </>
+                <div className="head">
+                  <div className="who">
+                    <strong>{lead.person.name}</strong>
+                    <div className="sub">{lead.person.title ?? lead.person.email ?? '—'}</div>
+                  </div>
+                  <ScorePill score={lead.aiScoring.relevanceScore} />
+                </div>
+                <div className="facts">
+                  <span>
+                    {lead.institution.name ? shortInstitute(lead.institution.name) : <span className="muted">Institute unknown</span>}
+                    {lead.institution.department && <span className="muted"> · {lead.institution.department.replace(/^(Department|School) of /i, '')}</span>}
+                  </span>
+                  {product && (
+                    <span>
+                      <span className="muted">Pitch: </span>
+                      {product}
+                    </span>
+                  )}
+                </div>
+                {instruments.length > 0 && (
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {instruments.slice(0, 2).map((inst) => (
+                      <InstrumentBadge key={inst.brandKey} vendor={inst.vendor} brand={inst.brand} model={inst.models.join(' / ') || undefined} />
+                    ))}
+                  </div>
+                )}
+                {(status === 'all' || (status === 'pending_review' && can('sales'))) && (
+                  <div className="foot" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                    {status === 'all' && <StatusBadge status={lead.status} />}
+                    {status === 'pending_review' && can('sales') && (
+                      <>
+                        <button className="btn btn-success btn-sm" disabled={busy === lead.id} onClick={() => void decide(lead.id, 'approved')}>
+                          Approve
+                        </button>
+                        <button className="btn btn-ghost btn-sm" disabled={busy === lead.id} onClick={() => void decide(lead.id, 'rejected')}>
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </motion.article>
+            );
+          })}
+          </AnimatePresence>
+        </div>
       )}
+
+      {totalPages > 1 && (
+        <div className="pagination">
+          <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+            Previous
+          </button>
+          <span className="muted">
+            Page {page + 1} of {totalPages}
+          </span>
+          <button className="btn btn-sm" disabled={page + 1 >= totalPages} onClick={() => setPage((p) => p + 1)}>
+            Next
+          </button>
+        </div>
+      )}
+
+      {openId && <LeadRecord id={openId} onClose={() => setQuery({ open: null })} onChanged={refresh} />}
     </>
   );
 }

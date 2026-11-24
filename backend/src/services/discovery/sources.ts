@@ -15,7 +15,7 @@ import {
   getActiveInstitutionIds,
   getEnabledTargets,
 } from '../settings/settingsService.js';
-import { normalizeInstitutionKey } from '../../utils/normalize.js';
+import { keyContains, normalizeInstitutionKey } from '../../utils/normalize.js';
 import { discoverViaNih, discoverViaNsf } from '../../integrations/grantClients.js';
 import { discoverViaOpenAlex, lookupAuthorProfile } from '../../integrations/openAlexClient.js';
 import { isExhausted } from '../../integrations/openAlexBudget.js';
@@ -460,7 +460,7 @@ export function targetMatchesInstitutions(
     if (!wanted.has(inst.openAlexId)) return false;
     const key = normalizeInstitutionKey(inst.name);
     if (!key) return false;
-    return key === targetKey || key.includes(targetKey) || targetKey.includes(key);
+    return key === targetKey || keyContains(key, targetKey) || keyContains(targetKey, key);
   });
 }
 
@@ -595,7 +595,7 @@ async function attachOpenAlexProfiles(candidates: DiscoveredCandidate[]): Promis
     if (institutionIdByName.has(key)) return institutionIdByName.get(key);
     // Scraped names are not always exact ("IIIT Hyderabad" vs the full title).
     for (const [known, id] of institutionIdByName) {
-      if (known.includes(key) || key.includes(known)) return id;
+      if (keyContains(known, key) || keyContains(key, known)) return id;
     }
     return undefined;
   };

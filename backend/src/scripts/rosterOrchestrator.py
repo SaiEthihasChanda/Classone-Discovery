@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -29,6 +30,25 @@ import urllib.request
 from datetime import datetime, timezone
 
 API = "http://localhost:4000/api"
+
+
+def _internal_token() -> str:
+    """INTERNAL_API_TOKEN from the environment, else from the repo-root .env — lets this script
+    through the API's sign-in check when AUTH_ENABLED is on."""
+    import os
+    from pathlib import Path
+
+    if os.environ.get("INTERNAL_API_TOKEN"):
+        return os.environ["INTERNAL_API_TOKEN"]
+    env_file = Path(__file__).resolve().parents[3] / ".env"
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("INTERNAL_API_TOKEN="):
+                return line.split("=", 1)[1].strip()
+    return ""
+
+
+INTERNAL_TOKEN = _internal_token()
 
 
 def log(msg: str) -> None:
@@ -41,7 +61,10 @@ def log(msg: str) -> None:
 
 def call(method: str, path: str, body: dict | None = None) -> dict:
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(f"{API}{path}", data=data, method=method, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if INTERNAL_TOKEN:
+        headers["X-Internal-Token"] = INTERNAL_TOKEN
+    req = urllib.request.Request(f"{API}{path}", data=data, method=method, headers=headers)
     with urllib.request.urlopen(req, timeout=120) as r:
         raw = r.read()
         return json.loads(raw) if raw else {}
@@ -83,10 +106,14 @@ def run(label: str, path: str, body: dict) -> dict:
 
 
 def vidwan_up() -> bool:
+    """A completed TLS handshake, not just an open TCP port: when Vidwan is down its server still
+    accepts the TCP connection and then resets it during the handshake."""
+    host = "vidwan.inflibnet.ac.in"
     try:
-        with socket.create_connection(("vidwan.inflibnet.ac.in", 443), timeout=8):
-            return True
-    except OSError:
+        with socket.create_connection((host, 443), timeout=8) as raw:
+            with ssl.create_default_context().wrap_socket(raw, server_hostname=host):
+                return True
+    except (OSError, ssl.SSLError):
         return False
 
 

@@ -16,9 +16,19 @@ export interface EnrichmentResult {
   costUsd: number;
 }
 
+/** A pipeline run's keyword override, as the scorers see it (see services/roster/applicationAreas). */
+export interface ScoringFocus {
+  /** Extra relevance terms, or the only ones when keywordsOnly. */
+  keywords: string[];
+  keywordsOnly: boolean;
+  /** Application areas this run is focused on (for model prompts; the heuristic tags them separately). */
+  areas: string[];
+}
+
 export interface EnrichmentInput {
   candidate: DiscoveredCandidate;
   catalog: Product[];
+  focus?: ScoringFocus;
 }
 
 /**
@@ -34,4 +44,10 @@ export interface AiProvider {
   /** True if this provider costs money, so callers can apply a budget guard. */
   readonly billable: boolean;
   enrich(input: EnrichmentInput): Promise<EnrichmentResult>;
+  /**
+   * Several candidates in one call (same catalog and focus). One result per
+   * input, in order; a per-candidate failure is an Error in its slot. Optional —
+   * without it callers score one at a time (see enrichCandidates).
+   */
+  enrichBatch?(inputs: EnrichmentInput[]): Promise<Array<EnrichmentResult | Error>>;
 }
