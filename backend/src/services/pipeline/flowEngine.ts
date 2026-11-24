@@ -488,12 +488,25 @@ export function resetPipelineSettingsCache(): void {
 const REDO: Record<FlowStage, FlowStage> = { verify: 'verify', score: 'verify', promote: 'score', fill: 'fill', done: 'fill' };
 
 export async function memberAction(id: string, action: 'next' | 'redo' | 'retry'): Promise<void> {
-  const m = (await FacultyMemberModel.findById(id).lean()) as { status: string; flow?: { stage?: FlowStage; state?: FlowState } } | null;
+  const m = (await FacultyMemberModel.findById(id).lean()) as { status: string; flow?: { stage?: FlowStage; state?: FlowState; note?: string } } | null;
   if (!m) throw Object.assign(new Error('Not found'), { status: 404 });
   if (m.status === 'excluded') throw Object.assign(new Error('Restore this person first'), { status: 400 });
   const stage = m.flow?.stage ?? 'verify';
   if (m.flow?.state === 'processing') throw Object.assign(new Error('Already in progress'), { status: 409 });
   if (action === 'next' && stage === 'done') throw Object.assign(new Error('Already in Leads'), { status: 400 });
+
+  // "Continue anyway" on someone a step stopped for review: the person has looked and decided,
+  // so they move on past that step — re-running it would only stop them again for the same reason.
+  if (action === 'next' && m.flow?.state === 'review') {
+    await FacultyMemberModel.updateOne(
+      { _id: id },
+      {
+        $set: { 'flow.stage': NEXT[stage as Exclude<FlowStage, 'done'>], 'flow.state': 'queued', 'flow.attempts': 0, 'flow.updatedAt': now(), 'flow.note': `Continued by a person past: ${m.flow?.note ?? 'review'}` },
+        $unset: { 'flow.nextAttemptAt': '', 'flow.lastError': '', 'flow.forced': '' },
+      },
+    );
+    return;
+  }
 
   const target = action === 'redo' ? REDO[stage] : stage;
   await FacultyMemberModel.updateOne(

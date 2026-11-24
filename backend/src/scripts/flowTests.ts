@@ -121,6 +121,14 @@ export async function runFlowTests(check: Check, request: Request): Promise<void
       assert.equal(l.status, 'excluded');
       assert.match(l.exclusionReason, /\(auto\)/);
       assert.deepEqual([u.flow.stage, u.flow.state], ['verify', 'review']);
+      // "Continue anyway" moves them past the check — re-running it would only stop them again.
+      const unsure = await member({ person: { name: 'Unknown Person Two', normalizedNameKey: 'unknown person two' } });
+      await flow.runFlowOnce();
+      assert.equal((await get(unsure)).flow.state, 'review');
+      await flow.memberAction(unsure, 'next');
+      await flow.runFlowOnce();
+      const c = await get(unsure);
+      assert.equal(c.flow.stage, 'done', 'continued past review and on through the rest');
     });
 
     await check('a failing step retries later, then fails — and others keep flowing', async () => {

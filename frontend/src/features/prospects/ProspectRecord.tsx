@@ -48,7 +48,12 @@ export function ProspectRecord({ id, mode, onClose, onChanged }: { id: string; m
 
   async function setStatus(next: 'eligible' | 'excluded') {
     if (!m) return;
-    const reason = next === 'excluded' ? (window.prompt('Why is this person not a prospect? (optional)') ?? undefined) : undefined;
+    let reason: string | undefined;
+    if (next === 'excluded') {
+      const answer = window.prompt(`Exclude ${m.person.name}? Why are they not a prospect? (optional)`, m.flow?.note ?? '');
+      if (answer === null) return; // cancelled
+      reason = answer || undefined;
+    }
     setBusy(true);
     setActionError(null);
     try {
@@ -116,8 +121,8 @@ export function ProspectRecord({ id, mode, onClose, onChanged }: { id: string; m
             </Link>
           )}
           {can('sales') && m.status === 'eligible' && (
-            <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => void setStatus('excluded')}>
-              Not a prospect
+            <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => void setStatus('excluded')} title="Not a prospect — take them off the conveyor (Restore brings them back)">
+              Exclude
             </button>
           )}
           {can('sales') && m.status === 'excluded' && (

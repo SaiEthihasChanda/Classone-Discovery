@@ -52,6 +52,20 @@ export function StageView({ stage, mode, onClose, onOpen }: { stage: FlowStage; 
     }
   }
 
+  async function exclude(m: StageMember) {
+    const reason = window.prompt(`Exclude ${m.person.name}? Why are they not a prospect? (optional)`, m.flow?.note ?? '');
+    if (reason === null) return; // cancelled
+    setBusy(m.id);
+    try {
+      await api.setRosterStatus(m.id, 'excluded', reason || undefined);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not exclude');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function runAll() {
     if (stage === 'done') return;
     setBusy('all');
@@ -140,9 +154,14 @@ export function StageView({ stage, mode, onClose, onOpen }: { stage: FlowStage; 
                   {m.flow?.state === 'failed' ? m.flow?.lastError ?? 'Failed' : m.flow?.note ?? 'Needs review'}
                 </span>,
                 can('sales') && (
-                  <button className="btn btn-sm" disabled={busy === m.id} onClick={() => void act(m.id, m.flow?.state === 'failed' ? 'retry' : 'next')}>
-                    {m.flow?.state === 'failed' ? 'Retry' : 'Continue anyway'}
-                  </button>
+                  <>
+                    <button className="btn btn-sm" disabled={busy === m.id} onClick={() => void act(m.id, m.flow?.state === 'failed' ? 'retry' : 'next')}>
+                      {m.flow?.state === 'failed' ? 'Retry' : 'Continue anyway'}
+                    </button>
+                    <button className="btn btn-sm btn-ghost" disabled={busy === m.id} onClick={() => void exclude(m)}>
+                      Exclude
+                    </button>
+                  </>
                 ),
               ),
             )}</AnimatePresence>
