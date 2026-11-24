@@ -23,6 +23,13 @@ const rosterRunSchema = new Schema(
     logLineCount: { type: Number, default: 0 },
     startedAt: { type: Date, required: true, index: true },
     finishedAt: { type: Date },
+    /** Conveyor runs: the "run finished" email (services/pipeline/runNotifier.ts). */
+    notification: {
+      to: String,
+      sentAt: Date,
+      attempts: Number,
+      error: String,
+    },
   },
   { collection: 'roster_runs', minimize: false, versionKey: false },
 );

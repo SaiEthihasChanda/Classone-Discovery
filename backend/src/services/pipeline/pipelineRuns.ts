@@ -19,7 +19,6 @@ import { RosterRunModel } from '../../models/rosterRun.model.js';
 import { listJobs, startJob, type JobState } from '../jobs/jobRunner.js';
 import { buildRoster } from '../roster/rosterBuilder.js';
 import { BACKLOG_RUN_ID, getPipelineSettings, withFlowRun } from './flowEngine.js';
-
 export const runConfigSchema = z.object({
   /** Shown in Run history and on scheduled runs. */
   label: z.string().trim().max(120).optional(),
@@ -46,8 +45,12 @@ export function unknownInstitutes(config: RunConfig): string[] {
   return config.institutionIds.filter((id) => !INDIAN_INSTITUTIONS.some((i) => i.openAlexId === id));
 }
 
-/** Starts a conveyor run now. Throws PipelineBusyError while another roster build is running. */
-export async function startFlowRun(config: RunConfig, meta: { triggeredBy?: string; scheduleId?: string; late?: boolean } = {}): Promise<JobState> {
+/**
+ * Starts a conveyor run now. Throws PipelineBusyError while another roster build is running.
+ * `notifyEmail` gets the "run finished" email (runNotifier.ts): the person who pressed
+ * Run, or who made the schedule.
+ */
+export async function startFlowRun(config: RunConfig, meta: { triggeredBy?: string; notifyEmail?: string; scheduleId?: string; late?: boolean } = {}): Promise<JobState> {
   if (listJobs('roster_build').some((j) => j.status === 'running')) {
     throw new PipelineBusyError('Another run is still finding people — wait for it to finish, or schedule this one for later.');
   }
@@ -60,10 +63,26 @@ export async function startFlowRun(config: RunConfig, meta: { triggeredBy?: stri
   );
 }
 
-/** Conveyor runs, newest first, with where their people are now. */
-export async function listFlowRuns(limit = 50) {
-  const runs = (await RosterRunModel.find({ $or: [{ 'options.flow': true }] }).sort({ startedAt: -1 }).limit(limit).lean()) as Array<{ _id: string } & Record<string, unknown>>;
-  const ids = runs.map((r) => r._id);
+export interface RunPeople {
+  total: number;
+  inLeads: number;
+  excluded: number;
+  /** Still to be picked up or mid-step — in Auto that includes everyone waiting in a column. */
+  moving: number;
+  /** Needs review or failed. */
+  attention: number;
+  /** Manual mode: waiting in a column for a person to move them on. */
+  waiting: number;
+}
+
+/** Where each run's people are now. */
+export async function peopleByRun(ids: string[], mode: 'auto' | 'manual'): Promise<Map<string, RunPeople>> {
+  const active = { $ne: ['$status', 'excluded'] };
+  // In Auto an idle person short of done is only between steps — the engine picks them up next tick.
+  const pending = mode === 'auto'
+    ? { $or: [{ $in: ['$flow.state', ['queued', 'processing']] }, { $and: [{ $eq: ['$flow.state', 'idle'] }, { $ne: ['$flow.stage', 'done'] }] }] }
+    : { $in: ['$flow.state', ['queued', 'processing']] };
+  const waiting = mode === 'auto' ? false : { $and: [{ $eq: ['$flow.state', 'idle'] }, { $ne: ['$flow.stage', 'done'] }] };
   const rows = (await FacultyMemberModel.aggregate([
     // People already on the roster before the conveyor carry no runId: they belong to the backlog run.
     { $match: { $or: [{ 'flow.runId': { $in: ids } }, { 'flow.runId': { $exists: false }, 'flow.stage': { $exists: true } }] } },
@@ -71,19 +90,29 @@ export async function listFlowRuns(limit = 50) {
       $group: {
         _id: { $ifNull: ['$flow.runId', BACKLOG_RUN_ID] },
         total: { $sum: 1 },
-        inLeads: { $sum: { $cond: [{ $and: [{ $eq: ['$flow.stage', 'done'] }, { $ne: ['$status', 'excluded'] }] }, 1, 0] } },
+        inLeads: { $sum: { $cond: [{ $and: [{ $eq: ['$flow.stage', 'done'] }, active] }, 1, 0] } },
         excluded: { $sum: { $cond: [{ $eq: ['$status', 'excluded'] }, 1, 0] } },
-        moving: { $sum: { $cond: [{ $and: [{ $in: ['$flow.state', ['queued', 'processing']] }, { $ne: ['$status', 'excluded'] }] }, 1, 0] } },
-        attention: { $sum: { $cond: [{ $and: [{ $in: ['$flow.state', ['review', 'failed']] }, { $ne: ['$status', 'excluded'] }] }, 1, 0] } },
+        moving: { $sum: { $cond: [{ $and: [pending, active] }, 1, 0] } },
+        attention: { $sum: { $cond: [{ $and: [{ $in: ['$flow.state', ['review', 'failed']] }, active] }, 1, 0] } },
+        waiting: { $sum: { $cond: [{ $and: [waiting, active] }, 1, 0] } },
       },
     },
-  ])) as Array<{ _id: string; total: number; inLeads: number; excluded: number; moving: number; attention: number }>;
-  const byRun = new Map(rows.map((r) => [r._id, r]));
+  ])) as Array<RunPeople & { _id: string }>;
+  return new Map(rows.map(({ _id, ...people }) => [_id, people]));
+}
+
+const NO_PEOPLE: RunPeople = { total: 0, inLeads: 0, excluded: 0, moving: 0, attention: 0, waiting: 0 };
+
+/** Conveyor runs, newest first, with where their people are now. */
+export async function listFlowRuns(limit = 50) {
+  const runs = (await RosterRunModel.find({ $or: [{ 'options.flow': true }] }).sort({ startedAt: -1 }).limit(limit).lean()) as Array<{ _id: string } & Record<string, unknown>>;
+  const { mode } = await getPipelineSettings();
+  const byRun = await peopleByRun(runs.map((r) => r._id), mode);
   return runs.map((r) => {
-    const people = byRun.get(r._id) ?? { total: 0, inLeads: 0, excluded: 0, moving: 0, attention: 0 };
+    const people = byRun.get(r._id) ?? NO_PEOPLE;
     // Finding is done when the build job is; the run is done once nobody of it is mid-step.
     const flowing = r.status === 'running' || people.moving > 0;
-    return { ...r, people: { total: people.total, inLeads: people.inLeads, excluded: people.excluded, moving: people.moving, attention: people.attention }, flowing };
+    return { ...r, people, flowing };
   });
 }
 
@@ -133,7 +162,7 @@ export async function fireDueSchedules(now = new Date(), start: typeof startFlow
   for (const s of due) {
     const late = now.getTime() - new Date(s.nextRunAt!).getTime() > LATE_AFTER_MS;
     try {
-      const job = await start(s.config as RunConfig, { triggeredBy: `schedule:${s.name}`, scheduleId: String(s._id), late });
+      const job = await start(s.config as RunConfig, { triggeredBy: `schedule:${s.name}`, notifyEmail: s.createdBy ?? undefined, scheduleId: String(s._id), late });
       const next = s.type === 'recurring' ? nextRunFor(s as never, now) : undefined;
       await PipelineScheduleModel.updateOne(
         { _id: s._id },

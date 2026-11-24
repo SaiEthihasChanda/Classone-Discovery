@@ -11,6 +11,7 @@ import { connectDatabase, disconnectDatabase } from './db/connection.js';
 import { startScheduler, stopScheduler } from './jobs/scheduler.js';
 import { startFlowEngine, stopFlowEngine } from './services/pipeline/flowEngine.js';
 import { startScheduleTicker, stopScheduleTicker } from './services/pipeline/pipelineRuns.js';
+import { startRunNotifier, stopRunNotifier } from './services/pipeline/runNotifier.js';
 import { getAiProvider } from './services/ai/enrichmentService.js';
 
 async function main(): Promise<void> {
@@ -31,6 +32,7 @@ async function main(): Promise<void> {
   if (process.env.FLOW_ENGINE !== 'off') {
     await startFlowEngine();
     startScheduleTicker();
+    startRunNotifier();
   }
 
   const shutdown = async (signal: string) => {
@@ -38,6 +40,7 @@ async function main(): Promise<void> {
     stopScheduler();
     stopFlowEngine();
     stopScheduleTicker();
+    stopRunNotifier();
     server.close();
     await disconnectDatabase();
     process.exit(0);

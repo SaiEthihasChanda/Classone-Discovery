@@ -179,7 +179,7 @@ pipelineRouter.post(
     const unknown = unknownInstitutes(parsed.data);
     if (unknown.length) throw ApiError.badRequest(`Unknown institute ids: ${unknown.join(', ')}`);
     try {
-      const job = await startFlowRun(parsed.data, { triggeredBy: req.user?.email });
+      const job = await startFlowRun(parsed.data, { triggeredBy: req.user?.email, notifyEmail: req.user?.email });
       res.status(202).json({ job: { id: job.id, status: job.status, startedAt: job.startedAt } });
     } catch (error) {
       if (error instanceof PipelineBusyError) throw new ApiError(409, error.message);

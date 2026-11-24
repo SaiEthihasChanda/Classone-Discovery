@@ -4,6 +4,7 @@
  * and the scheduled runs, editable in place.
  */
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api, openApiFile } from '../../api/client';
 import { useAsync } from '../../hooks/useAsync';
 import { useAuth } from '../../auth/AuthProvider';
@@ -203,6 +204,22 @@ export function RunHistory({ config, mode }: { config: RosterConfig; mode: 'auto
   const [logOf, setLogOf] = useState<FlowRun | null>(null);
   const instituteNames = new Map(config.institutions.map((i) => [i.id, i.name] as const));
 
+  // ?run=<id> (the link in a "run finished" email) opens that run's log.
+  const [params, setParams] = useSearchParams();
+  const linkedRun = params.get('run');
+  useEffect(() => {
+    const run = linkedRun && data?.items.find((r) => r._id === linkedRun);
+    if (run) setLogOf(run);
+  }, [linkedRun, data]);
+  const closeLog = () => {
+    setLogOf(null);
+    if (linkedRun) {
+      const next = new URLSearchParams(params);
+      next.delete('run');
+      setParams(next, { replace: true });
+    }
+  };
+
   // Live: counts move while runs flow, and a schedule can start a new run at any moment.
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 5000);
@@ -272,7 +289,7 @@ export function RunHistory({ config, mode }: { config: RosterConfig; mode: 'auto
           </table>
         </div>
       )}
-      {logOf && <RunLog run={logOf} onClose={() => setLogOf(null)} />}
+      {logOf && <RunLog run={logOf} onClose={closeLog} />}
     </>
   );
 }

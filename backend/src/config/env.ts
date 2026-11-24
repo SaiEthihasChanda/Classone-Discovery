@@ -78,6 +78,10 @@ const envSchema = z.object({
   // a cost-awareness threshold here (crossing it still works, just isn't free).
   GEMINI_BACKFILL_MONTHLY_FREE_SEARCHES: z.coerce.number().int().positive().default(5000),
 
+  // Where people open the app — links in notification emails. Defaults to the
+  // first CORS origin, which is the frontend's address.
+  APP_URL: z.string().url().optional(),
+
   EMAIL_PROVIDER: z.enum(['ethereal', 'gmail']).default('ethereal'),
   EMAIL_FROM_NAME: z.string().default('Class One Systems'),
   EMAIL_FROM_ADDRESS: z.string().default('sales@classone-systems.example'),
@@ -140,6 +144,7 @@ if (authEnabled && !parsed.data.FIREBASE_PROJECT_ID) {
 export const env = {
   ...parsed.data,
   corsOrigins: parsed.data.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean),
+  appUrl: (parsed.data.APP_URL ?? parsed.data.CORS_ORIGINS.split(',')[0]!.trim()).replace(/\/+$/, ''),
   isProduction: parsed.data.NODE_ENV === 'production',
   authEnabled,
   adminEmails: parsed.data.ADMIN_EMAILS.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),

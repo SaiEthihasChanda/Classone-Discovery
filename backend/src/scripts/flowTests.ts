@@ -245,6 +245,47 @@ export async function runFlowTests(check: Check, request: Request): Promise<void
       }
     });
 
+    await check('the person who started a run gets one "run finished" email, only once nobody of it is still moving', async () => {
+      const { RosterRunModel } = await import('../models/rosterRun.model.js');
+      const { notifyFinishedRuns } = await import('../services/pipeline/runNotifier.js');
+      await flow.updatePipelineSettings({ mode: 'auto' });
+      const sent: Array<{ to: string; subject: string; text: string; html?: string }> = [];
+      const transport = { name: 'ethereal' as const, send: async (m: { to: string; subject: string; text: string; html?: string }) => (sent.push(m), { providerMessageId: 'x' }) };
+      const runId = `notify-test-${Date.now()}`;
+      await RosterRunModel.create({ _id: runId, kind: 'roster_build', status: 'completed', startedAt: new Date(Date.now() - 600_000), options: { flow: true, label: 'Notify test', institutionIds: [], notifyEmail: 'someone@example.com' } });
+      const lead1 = await member({ status: 'promoted', relevance: { score: 88 }, flow: { stage: 'done', state: 'idle', runId } });
+      const between = await member({ flow: { stage: 'promote', state: 'idle', runId } });
+      await member({ status: 'excluded', flow: { stage: 'promote', state: 'idle', runId } });
+
+      assert.equal(await notifyFinishedRuns(new Date(), transport as never), 0, 'idle between steps in Auto still counts as moving');
+      await FacultyMemberModel.updateOne({ _id: between }, { $set: { 'flow.stage': 'done' } });
+      assert.equal(await notifyFinishedRuns(new Date(), transport as never), 1);
+      assert.equal(await notifyFinishedRuns(new Date(), transport as never), 0, 'never twice');
+      const [mail] = sent;
+      assert.equal(mail!.to, 'someone@example.com');
+      assert.match(mail!.subject, /Notify test — 2 new leads/);
+      assert.match(mail!.text, /People found: 3/);
+      assert.match(mail!.text, /Excluded \(score below \d+\): 1/);
+      assert.match(mail!.text, new RegExp(`/prospects\\?view=history&run=${runId}`));
+      assert.match(mail!.text, /\/leads\?status=pending_review/);
+      assert.match(mail!.text, /- Flow Person \d+, Test Institute — score 88/, 'top leads listed with scores');
+      assert.ok(lead1);
+
+      // A send that fails is retried later, and the error kept on the run.
+      const runId2 = `notify-test-fail-${Date.now()}`;
+      await RosterRunModel.create({ _id: runId2, kind: 'roster_build', status: 'failed', error: 'boom', startedAt: new Date(), options: { flow: true, notifyEmail: 'someone@example.com' } });
+      const failing = { name: 'ethereal' as const, send: async () => Promise.reject(new Error('SMTP down')) };
+      assert.equal(await notifyFinishedRuns(new Date(), failing as never), 0);
+      let r = (await RosterRunModel.findById(runId2).lean()) as any;
+      assert.equal(r.notification.error, 'SMTP down');
+      assert.equal(r.notification.sentAt, undefined, 'unclaimed for a retry');
+      assert.equal(await notifyFinishedRuns(new Date(), transport as never), 1, 'sent on the next tick');
+      assert.match(sent[1]!.text, /stopped with an error: boom/);
+      r = (await RosterRunModel.findById(runId2).lean()) as any;
+      assert.equal(r.notification.error, undefined);
+      await RosterRunModel.deleteMany({ _id: { $in: [runId, runId2] } });
+    });
+
     await check('interrupted steps are re-queued on restart; members without a flow are placed from what is known', async () => {
       await flow.updatePipelineSettings({ mode: 'manual' });
       const stuck = await member({ flow: { stage: 'score', state: 'processing' } });
