@@ -60,3 +60,16 @@ classone-app.tar.gz
 logs/
 ~$*
 *.tsbuildinfo
+
+# Business documents (proposals, cost estimates, notes) — kept outside version control
+*.pptx
+*.docx
+*.xlsx
+*.pdf
+AI_Sales_Automation_Notion.md
+
+# Showcase video project — a separate project with its own tooling and media
+Motion_as_kit/
+
+# Graph and analysis output
+graphify-out/
