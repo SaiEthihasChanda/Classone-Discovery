@@ -34,10 +34,13 @@ export class EtherealTransport implements EmailTransport {
       text: message.text,
       html: message.html,
       inReplyTo: message.inReplyToMessageId,
+      attachments: message.attachments,
+      headers: { ...(message.listUnsubscribe ? { 'List-Unsubscribe': message.listUnsubscribe } : {}), ...(message.internal ? { 'X-ClassOne-Notice': 'internal' } : {}) },
       references: message.references,
     });
     return {
       providerMessageId: info.messageId,
+      rfcMessageId: info.messageId,
       previewUrl: nodemailer.getTestMessageUrl(info) || undefined,
     };
   }

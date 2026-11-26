@@ -23,7 +23,9 @@ export type LeadSourceType =
   | 'manual'
   | 'manual_discovery_trigger'
   /** Promoted from the faculty roster (see `FacultyMember`). */
-  | 'faculty_roster';
+  | 'faculty_roster'
+  /** Wrote to the sales inbox first (services/email/inboxPoller.ts). */
+  | 'inbound_email';
 
 /**
  * Lifecycle of a lead.
@@ -253,6 +255,8 @@ export interface Lead {
   activeThreadId?: string;
   /** Promoted by the Prospects conveyor but still filling info — not shown in Leads yet. */
   inPipeline?: boolean;
+  /** Asked not to be emailed (an unsubscribe reply): no outreach or follow-up is drafted for them. */
+  doNotContact?: boolean;
   tags: string[];
   createdAt: Date;
   updatedAt: Date;
@@ -277,7 +281,14 @@ export type MessageType =
   | 'initial_outreach'
   | 'follow_up_1'
   | 'follow_up_2'
-  | 'reply';
+  /** Inbound: the lead wrote to us. */
+  | 'reply'
+  /** Outbound: our answer to their mail (AI-drafted, sent only once a person approves it). */
+  | 'response'
+  /** Outbound: written by a person in Conversations (or sent from Gmail itself and synced). */
+  | 'manual'
+  /** Outbound: one recipient's copy of a campaign (services/campaigns). */
+  | 'campaign';
 
 export interface ThreadMessage {
   messageId: string;
@@ -290,7 +301,29 @@ export interface ThreadMessage {
   draftedBy?: 'ai' | 'human';
   approvedBy?: string;
   aiDraftModel?: string;
+  /** RFC 5322 Message-ID header — what In-Reply-To points at, so replies thread in the recipient's mail app. */
+  rfcMessageId?: string;
+  /** Inbound only: the sender's address, and what the AI read in the mail. */
+  fromAddress?: string;
+  /** Inbound: when someone opened it in the app (or it was already read in Gmail). Unset = unread. */
+  readAt?: Date;
+  /** Outbound: the app user who sent it (manual replies, approvals). */
+  sentBy?: string;
+  attachments?: Array<{ filename: string; mimeType?: string; size?: number }>;
+  intent?: InboundIntent;
+  summary?: string;
 }
+
+/** What an incoming mail is about — set by the AI triage (services/email/inboundTriage.ts). */
+export type InboundIntent =
+  | 'product_enquiry'
+  | 'quote_request'
+  | 'support_request'
+  | 'meeting_request'
+  | 'not_interested'
+  | 'unsubscribe'
+  | 'out_of_office'
+  | 'other';
 
 export interface ThreadFollowUp {
   attemptsSent: number;
@@ -299,7 +332,7 @@ export interface ThreadFollowUp {
   /** When the scheduler should next examine this thread. Indexed — drives the whole job. */
   nextCheckAt?: Date;
   replyDetected: boolean;
-  replyDetectionMethod?: 'ai_summary' | 'manual';
+  replyDetectionMethod?: 'ai_summary' | 'manual' | 'gmail';
   replyDetectedAt?: Date;
   lastAiThreadSummary?: string;
   lastAiCheckAt?: Date;
@@ -307,7 +340,11 @@ export interface ThreadFollowUp {
 
 export interface EmailThread {
   id: string;
-  leadId: string;
+  /** Absent for someone not (yet) in the CRM — the conversation is with `contactEmail`. */
+  leadId?: string;
+  /** Who the conversation is with (lowercase). Older threads only have leadEmailSnapshot. */
+  contactEmail?: string;
+  contactName?: string;
   /** Snapshot of the address used, so history stays truthful if the lead's email is later edited. */
   leadEmailSnapshot: string;
   subjectLine: string;
@@ -324,6 +361,18 @@ export interface EmailThread {
   draftBody?: string;
   draftModel?: string;
   draftCreatedAt?: Date;
+  /** A `response` draft: what the lead's mail was about (not_interested closes the thread once handled). */
+  draftIntent?: InboundIntent;
+  /**
+   * Their message that still wants a real answer from the team — set when they write, cleared when a person
+   * answers (or marks it handled). An automatic holding reply does NOT clear it. Drives "needs reply",
+   * the overdue digest and auto-replies (services/email/replyWatch.ts).
+   */
+  awaitingReplySince?: Date;
+  /** Auto-reply people: when the holding reply is due (set once overdue; cleared by a real answer). */
+  autoReplyDueAt?: Date;
+  /** When the last holding reply went out — at most one per message of theirs. */
+  autoReplySentAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -400,6 +449,10 @@ export interface Product {
   isActive: boolean;
   sourceUrl?: string;
   lastSyncedAt?: Date;
+  source?: 'seed' | 'website' | 'manual';
+  images?: string[];
+  websiteHash?: string;
+  aiDerived?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -505,6 +558,8 @@ export interface FacultyMember {
     score?: number;
     reasoning?: string;
     recommendedProductIds?: string[];
+    recommendedProductNotes?: string;
+    signals?: QualificationSignals;
     scoredAt?: Date;
     scoringModel?: string;
   };

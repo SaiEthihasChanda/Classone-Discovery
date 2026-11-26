@@ -42,6 +42,13 @@ const productSchema = new Schema(
     isActive: { type: Boolean, default: true },
     sourceUrl: String,
     lastSyncedAt: Date,
+    /** website: read from classonesystems.in's Firestore by services/catalog/catalogWatcher.ts. */
+    source: { type: String, enum: ['seed', 'website', 'manual'] },
+    images: { type: [String], default: [] },
+    /** Fingerprint of the website's title/description/images — a change updates the product. */
+    websiteHash: String,
+    /** Category, areas and tags were derived by the AI from the website description (editable in Admin). */
+    aiDerived: Boolean,
   },
   {
     timestamps: true,

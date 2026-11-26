@@ -256,13 +256,13 @@ async function main(): Promise<void> {
   await check('GET /dashboard reflects the activity above', async () => {
     const { status, body } = await request('/dashboard');
     assert.equal(status, 200);
-    assert.equal(body.tiles.activeCustomers, 1, 'the approved lead should count as active');
-    assert.equal(body.tiles.inProgressDiscoveries, 0);
-    assert.equal(body.tiles.openThreads, 0);
+    assert.equal(body.headline.inCrm.value, 1, 'the approved lead should count as in the CRM');
+    assert.equal(body.headline.discoveriesInProgress.value, 0);
+    assert.equal(body.headline.openConversations.value, 0);
     // Manual creation + approval should both have been logged.
-    assert.ok(body.recentActivity.length >= 2, 'activity feed is missing entries');
+    assert.ok(body.activity.length >= 2, 'activity feed is missing entries');
     assert.ok(
-      body.recentActivity.some((e: { type: string }) => e.type === 'lead_approved'),
+      body.activity.some((e: { type: string }) => e.type === 'lead_approved'),
       'approval was not logged to the activity feed',
     );
   });
@@ -1534,7 +1534,7 @@ async function main(): Promise<void> {
 
   await check('the run is recorded in the activity feed as one rollup entry', async () => {
     const { body } = await request('/dashboard');
-    const runEntries = body.recentActivity.filter(
+    const runEntries = body.activity.filter(
       (e: { type: string }) => e.type === 'discovery_run_completed',
     );
     assert.ok(runEntries.length > 0, 'no discovery run was logged');
@@ -1549,6 +1549,16 @@ async function main(): Promise<void> {
   await runRosterTests(check, request);
   const { runFlowTests } = await import('./flowTests.js');
   await runFlowTests(check, request);
+  const { runInboxTests } = await import('./inboxTests.js');
+  await runInboxTests(check);
+  const { runCampaignTests } = await import('./campaignTests.js');
+  await runCampaignTests(check);
+  const { runReplyWatchTests } = await import('./replyWatchTests.js');
+  await runReplyWatchTests(check);
+  const { runLaunchTests } = await import('./launchTests.js');
+  await runLaunchTests(check);
+  const { runDashboardTests } = await import('./dashboardTests.js');
+  await runDashboardTests(check);
 
   // --- Teardown -----------------------------------------------------------
   server.close();

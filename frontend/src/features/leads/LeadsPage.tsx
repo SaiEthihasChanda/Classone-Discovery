@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api, type BrandOption, type LeadListParams } from '../../api/client';
 import { useAsync } from '../../hooks/useAsync';
 import { EmptyState, ErrorBanner, InstrumentBadge, Loading, ScorePill, StatusBadge, shortInstitute } from '../../components/common';
-import { Icon, Segmented } from '../../components/ui';
+import { Icon, Segmented, Tabs } from '../../components/ui';
 import { useAuth } from '../../auth/AuthProvider';
 import { LeadRecord } from './LeadRecord';
 import { AnimatePresence, cardMotion, motion } from '../../components/motion';
@@ -102,15 +102,17 @@ function groupByBrand(
   return out;
 }
 
-type StatusKey = 'pending_review' | 'approved' | 'customer' | 'rejected' | 'all';
+type StatusKey = 'people' | 'pending_review' | 'approved' | 'customer' | 'rejected' | 'all';
 
-const STATUS_TABS: Array<{ key: StatusKey; label: string }> = [
-  { key: 'pending_review', label: 'To review' },
-  { key: 'approved', label: 'Approved' },
-  { key: 'customer', label: 'Customers' },
-  { key: 'rejected', label: 'Rejected' },
-  { key: 'all', label: 'All' },
-];
+/**
+ * Two views: "In the CRM" (the people we work with — approved leads and customers) and
+ * "Awaiting approval & other" (to review, rejected, everything). Each has its own sub-filters.
+ */
+const VIEWS = {
+  people: { label: 'In the CRM', tabs: [{ key: 'people', label: 'Everyone' }, { key: 'approved', label: 'Leads' }, { key: 'customer', label: 'Customers' }] },
+  other: { label: 'Awaiting approval & other', tabs: [{ key: 'pending_review', label: 'Awaiting approval' }, { key: 'rejected', label: 'Rejected' }, { key: 'all', label: 'All records' }] },
+} as const satisfies Record<string, { label: string; tabs: ReadonlyArray<{ key: StatusKey; label: string }> }>;
+const viewOf = (s: StatusKey): keyof typeof VIEWS => (s === 'pending_review' || s === 'rejected' || s === 'all' ? 'other' : 'people');
 
 /**
  * Every lead as a grid of compact cards — the review queue is just the "To
@@ -121,7 +123,8 @@ export function LeadsPage() {
   const { can } = useAuth();
   const [params, setParams] = useSearchParams();
   const openId = params.get('open');
-  const status = (params.get('status') as StatusKey | null) ?? 'pending_review';
+  const status = (params.get('status') as StatusKey | null) ?? 'people';
+  const view = viewOf(status);
 
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -170,6 +173,7 @@ export function LeadsPage() {
     const out: Record<string, number> = {};
     keys.forEach((k, i) => (out[k] = results[i]!.total));
     out.all = Object.values(out).reduce((a, b) => a + b, 0);
+    out.people = (out.approved ?? 0) + (out.customer ?? 0);
     return out;
   }, []);
 
@@ -228,8 +232,8 @@ export function LeadsPage() {
     <>
       <div className="page-header">
         <div>
-          <h1>Leads</h1>
-          <p>Researchers promoted from Prospects. Review them, then reach out from the lead itself.</p>
+          <h1>CRM</h1>
+          <p>The people we work with. New researchers from Prospects wait under "Awaiting approval" until someone approves them.</p>
         </div>
         <div className="page-actions">
           <button className="btn" onClick={exportCsv} disabled={busy === 'export' || !data?.total}>
@@ -243,12 +247,23 @@ export function LeadsPage() {
         </div>
       </div>
 
+      <Tabs
+        items={[
+          { key: 'people', label: VIEWS.people.label, count: counts?.people },
+          { key: 'other', label: VIEWS.other.label, count: counts?.pending_review },
+        ]}
+        value={view}
+        onChange={(v) => {
+          setQuery({ status: v === 'people' ? null : 'pending_review' });
+          setPage(0);
+        }}
+      />
       <div className="toolbar" style={{ justifyContent: 'space-between' }}>
         <Segmented
-          items={STATUS_TABS.map((t) => ({ ...t, count: counts?.[t.key] }))}
+          items={VIEWS[view].tabs.map((t) => ({ ...t, count: counts?.[t.key] }))}
           value={status}
           onChange={(k) => {
-            setQuery({ status: k });
+            setQuery({ status: k === 'people' ? null : k });
             setPage(0);
           }}
         />
@@ -334,9 +349,9 @@ export function LeadsPage() {
                     ))}
                   </div>
                 )}
-                {(status === 'all' || (status === 'pending_review' && can('sales'))) && (
+                {(status === 'all' || status === 'people' || (status === 'pending_review' && can('sales'))) && (
                   <div className="foot" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-                    {status === 'all' && <StatusBadge status={lead.status} />}
+                    {(status === 'all' || status === 'people') && <StatusBadge status={lead.status} />}
                     {status === 'pending_review' && can('sales') && (
                       <>
                         <button className="btn btn-success btn-sm" disabled={busy === lead.id} onClick={() => void decide(lead.id, 'approved')}>

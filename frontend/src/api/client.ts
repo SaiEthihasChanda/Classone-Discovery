@@ -6,7 +6,18 @@
  * its own handling.
  */
 import type {
+  AudiencePreview,
+  Campaign,
+  CampaignAudience,
+  CampaignBlock,
+  CampaignListItem,
+  CampaignRecipient,
+  InboundEmail,
+  Person,
+  PeopleFilter,
+  PersonDetail,
   DashboardData,
+  DashboardRange,
   EmailThread,
   FacultyMember,
   FlowRun,
@@ -199,7 +210,7 @@ export interface CreateLeadPayload {
 export const api = {
   health: () => request<{ status: string; dependencies: Record<string, string> }>('/health'),
 
-  dashboard: () => request<DashboardData>('/dashboard'),
+  dashboard: (range: DashboardRange = '30') => request<DashboardData>(`/dashboard?range=${range}`),
 
   listLeads: (params: LeadListParams = {}) =>
     request<Paginated<Lead>>(`/leads${leadQueryString(params)}`),
@@ -255,6 +266,8 @@ export const api = {
   deleteLead: (id: string) => request<void>(`/leads/${id}`, { method: 'DELETE' }),
 
   listProducts: () => request<{ items: Product[]; total: number }>('/catalog'),
+  updateProduct: (id: string, patch: Partial<Pick<Product, 'applicationAreas' | 'tags' | 'isActive' | 'description'>>) =>
+    request<Product>(`/catalog/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
   discoveryConfig: () => request<DiscoveryConfig>('/discovery/config'),
 
@@ -356,6 +369,90 @@ export const api = {
     }),
 
   /** Pending drafts (default) or any other status — the Outreach page's list. */
+  inbox: () => request<{ items: InboundEmail[] }>('/threads/inbox'),
+
+  // New products from the website → launch campaigns
+  launches: () =>
+    request<{
+      settings: { mode: 'auto' | 'manual'; minRelevance: number; maxRecipients: number };
+      items: Array<{ id: string; productId: string; productName?: string; detectedAt: string; status: 'pending' | 'ready' | 'failed' | 'skipped' | 'withdrawn'; campaignId?: string; recipients?: number; attempts?: number; error?: string }>;
+      lastSync: { at: string; seen: number; added: number; failed: number } | null;
+    }>('/campaigns/launches'),
+  setLaunchSettings: (patch: Partial<{ mode: 'auto' | 'manual'; minRelevance: number; maxRecipients: number }>) =>
+    request<{ mode: 'auto' | 'manual'; minRelevance: number; maxRecipients: number }>('/campaigns/launches/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+  checkWebsiteNow: () =>
+    request<{ seen?: number; added?: string[]; updated?: string[]; removed?: string[]; failed?: Array<{ slug: string; error: string }>; firstRun?: boolean; busy?: boolean }>('/campaigns/launches/check', { method: 'POST' }),
+
+  // Campaigns
+  campaigns: () => request<{ items: CampaignListItem[]; sentToday: number; dailyCap: number }>('/campaigns'),
+  campaign: (id: string) => request<Campaign>(`/campaigns/${id}`),
+  createCampaign: (name: string) => request<Campaign>('/campaigns', { method: 'POST', body: JSON.stringify({ name }) }),
+  updateCampaign: (id: string, patch: Partial<Pick<Campaign, 'name' | 'subject' | 'preheader' | 'blocks' | 'audience' | 'paceSeconds'>>) =>
+    request<Campaign>(`/campaigns/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
+  deleteCampaign: (id: string) => request<{ ok: true }>(`/campaigns/${id}`, { method: 'DELETE' }),
+  duplicateCampaign: (id: string) => request<Campaign>(`/campaigns/${id}/duplicate`, { method: 'POST' }),
+  campaignRecipients: (id: string) => request<{ items: CampaignRecipient[] }>(`/campaigns/${id}/recipients`),
+  campaignAudienceOptions: () => request<{ institutes: string[]; applicationAreas: string[]; tags: string[]; products: Array<{ id: string; name: string }> }>('/campaigns/audience/options'),
+  campaignAudiencePreview: (audience: CampaignAudience, campaignId?: string) =>
+    request<AudiencePreview>('/campaigns/audience/preview', { method: 'POST', body: JSON.stringify({ audience, campaignId }) }),
+  campaignPreview: (input: { subject: string; preheader?: string; blocks: CampaignBlock[]; leadId?: string }) =>
+    request<{ subject: string; html: string; text: string }>('/campaigns/preview', { method: 'POST', body: JSON.stringify(input) }),
+  campaignAiText: (brief: string, products?: string[]) => request<{ text: string; model: string }>('/campaigns/ai-text', { method: 'POST', body: JSON.stringify({ brief, products }) }),
+  uploadCampaignAsset: (input: { filename: string; contentType: string; data: string; width?: number; height?: number }) =>
+    request<{ id: string; filename: string; size: number }>('/campaigns/assets', { method: 'POST', body: JSON.stringify(input) }),
+  sendCampaignTest: (id: string, to?: string) => request<{ ok: true; to: string }>(`/campaigns/${id}/test`, { method: 'POST', body: JSON.stringify(to ? { to } : {}) }),
+  startCampaign: (id: string, sendAt?: string) => request<Campaign>(`/campaigns/${id}/start`, { method: 'POST', body: JSON.stringify(sendAt ? { sendAt } : {}) }),
+  pauseCampaign: (id: string) => request<Campaign>(`/campaigns/${id}/pause`, { method: 'POST' }),
+  cancelCampaign: (id: string) => request<Campaign>(`/campaigns/${id}/cancel`, { method: 'POST' }),
+
+  // Conversations — the mailbox by person
+  people: (filter: PeopleFilter = 'all', q = '') =>
+    request<{ items: Person[] }>(`/conversations/people?${new URLSearchParams({ filter, ...(q ? { q } : {}) })}`),
+  needsYou: () =>
+    request<{
+      items: Array<{
+        threadId: string;
+        kind: 'reply' | 'followup';
+        person: { email: string; name: string; title?: string; institution?: string; isLead: boolean; doNotContact: boolean };
+        topic: string;
+        waitingSince?: string;
+        overdue: boolean;
+        theirMessage?: { subject: string; body: string; intent?: string; at: string };
+        draft?: { subject?: string; body: string; type?: string };
+        autoReplyDueAt?: string;
+        autoReplySent: boolean;
+        conversations: number;
+      }>;
+    }>('/conversations/queue'),
+  conversationSummary: () => request<{ unreadPeople: number; drafts: number; needsReply: number }>('/conversations/summary'),
+  person: (email: string) => request<PersonDetail>(`/conversations/people/${encodeURIComponent(email)}`),
+  personToLead: (email: string) => request<{ leadId: string }>(`/conversations/people/${encodeURIComponent(email)}/to-lead`, { method: 'POST' }),
+  setDoNotContact: (email: string, value: boolean) =>
+    request<{ ok: true }>(`/conversations/people/${encodeURIComponent(email)}/do-not-contact`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  conversationSettings: () => request<{ followUpMode: 'auto' | 'manual' }>('/conversations/settings'),
+  setFollowUpMode: (followUpMode: 'auto' | 'manual') => request<{ followUpMode: 'auto' | 'manual' }>('/conversations/settings', { method: 'PUT', body: JSON.stringify({ followUpMode }) }),
+  setPersonFollowUpMode: (email: string, value: 'auto' | 'manual' | null) =>
+    request<{ ok: true }>(`/conversations/people/${encodeURIComponent(email)}/follow-up-mode`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  setAutoReply: (email: string, value: boolean) =>
+    request<{ ok: true }>(`/conversations/people/${encodeURIComponent(email)}/auto-reply`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  markConversationHandled: (threadId: string) => request<{ ok: true }>(`/conversations/threads/${threadId}/handled`, { method: 'POST' }),
+  publicDraft: (token: string) =>
+    request<{
+      to: { name: string; email?: string };
+      subject?: string;
+      body?: string;
+      theirMessage: { subject: string; body: string; at: string } | null;
+      waitingSince?: string;
+    }>(`/public/drafts/${encodeURIComponent(token)}`),
+  sendPublicDraft: (token: string) => request<{ ok: true; to: string }>(`/public/drafts/${encodeURIComponent(token)}/send`, { method: 'POST' }),
+  markConversationRead: (threadId: string) => request<{ ok: true }>(`/conversations/threads/${threadId}/read`, { method: 'POST' }),
+  replyOnConversation: (threadId: string, body: string) =>
+    request<EmailThread>(`/conversations/threads/${threadId}/reply`, { method: 'POST', body: JSON.stringify({ body }) }),
+  aiDraftReply: (threadId: string) => request<{ body: string; model: string }>(`/conversations/threads/${threadId}/ai-draft`, { method: 'POST' }),
+  sendWaitingDraft: (threadId: string) => request<EmailThread>(`/conversations/threads/${threadId}/send-draft`, { method: 'POST' }),
+  discardWaitingDraft: (threadId: string) => request<EmailThread>(`/conversations/threads/${threadId}/discard-draft`, { method: 'POST' }),
+  composeMessage: (input: { to: string; subject: string; body: string }) =>
+    request<EmailThread>('/conversations/compose', { method: 'POST', body: JSON.stringify(input) }),
   listThreads: (status?: EmailThread['status']) =>
     request<{ items: Array<EmailThread & { leadName?: string; leadInstitution?: string }> }>(
       `/threads${status ? `?status=${status}` : ''}`,

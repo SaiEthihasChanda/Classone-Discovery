@@ -115,8 +115,30 @@ const envSchema = z.object({
   CRON_DISCOVERY_SCHEDULE: z.string().default('0 2 * * 1'),
   CRON_FOLLOWUP_CHECK_SCHEDULE: z.string().default('0 9 * * *'),
 
-  FOLLOWUP_WAIT_DAYS: z.coerce.number().int().positive().default(6),
+  // Days of silence before a follow-up is drafted. Decimals allowed for testing (0.01 ≈ 15 minutes).
+  FOLLOWUP_WAIT_DAYS: z.coerce.number().positive().default(6),
   FOLLOWUP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(2),
+  // How often the follow-up check runs in-process (independent of CRON_ENABLED, which gates discovery only).
+  FOLLOWUP_CHECK_MINUTES: z.coerce.number().positive().default(10),
+  // Conversations: their message counts as overdue after this many hours without a real answer.
+  OVERDUE_HOURS: z.coerce.number().positive().default(48),
+  // Auto-reply people: once overdue, wait this long for a person to answer before the AI's holding reply goes out.
+  AUTO_REPLY_DELAY_HOURS: z.coerce.number().min(0).default(4),
+  // When the daily "replies overdue" digest goes to sales and admin users (India time, HH:MM).
+  DIGEST_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default('09:30'),
+  // Signs the "Send this reply" links in team emails. Defaults to INTERNAL_API_TOKEN; set its own to rotate separately.
+  ACTION_LINK_SECRET: z.string().min(16).optional(),
+  // classonesystems.in's Firestore (read-only): its service-account key, and how often to look for new products.
+  WEBSITE_FIREBASE_KEY_PATH: z.string().default('C:\\Users\\saiet\\Classone\\serviceAccountKey.json'),
+  CATALOG_WATCH_MINUTES: z.coerce.number().positive().default(30),
+  // New-product launches: AI relevance (0-100) needed to receive the email, and the most recipients per launch.
+  LAUNCH_MIN_RELEVANCE: z.coerce.number().min(0).max(100).default(60),
+  LAUNCH_MAX_RECIPIENTS: z.coerce.number().int().positive().default(200),
+  // Most campaign emails sent per day (India time), across all campaigns. Gmail allows ~500/day
+  // for a personal account and ~2,000 for Google Workspace; staying well under keeps it out of spam.
+  CAMPAIGN_DAILY_CAP: z.coerce.number().int().positive().default(300),
+  // How often the sales inbox is read for replies and enquiries (Gmail only; 0 = off).
+  INBOX_POLL_SECONDS: z.coerce.number().int().min(0).default(60),
 });
 
 const parsed = envSchema.safeParse(process.env);

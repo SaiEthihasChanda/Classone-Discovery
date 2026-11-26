@@ -4,7 +4,9 @@ import { HomePage } from './features/home/HomePage';
 import { ProspectsPage } from './features/prospects/ProspectsPage';
 import { LeadsPage } from './features/leads/LeadsPage';
 import { NewLeadPage } from './features/leads/NewLeadPage';
-import { OutreachPage } from './features/outreach/OutreachPage';
+import { ConversationsPage } from './features/conversations/ConversationsPage';
+import { SendDraftPage } from './features/conversations/SendDraftPage';
+import { CampaignsPage } from './features/campaigns/CampaignsPage';
 import { AdminPage } from './features/admin/AdminPage';
 import { useAuth } from './auth/AuthProvider';
 import { SignInScreen } from './auth/SignInScreen';
@@ -25,8 +27,9 @@ function Sidebar() {
   // Small live counts on the two inboxes: refreshed on every page change and every 10 s,
   // so approving leads or sending drafts (here or by the conveyor) shows up without a reload.
   const { data: counts, reload } = useAsync(async () => {
-    const [review, drafts] = await Promise.all([api.listLeads({ status: 'pending_review', limit: 1 }), api.listThreads('draft')]);
-    return { review: review.total, drafts: drafts.items.length };
+    const [review, conv] = await Promise.all([api.listLeads({ status: 'pending_review', limit: 1 }), api.conversationSummary()]);
+    // Conversations: people waiting for a reply from us (an AI draft for them is ready or not).
+    return { review: review.total, conversations: conv.needsReply };
   }, [pathname]);
   useEffect(() => {
     const t = setInterval(reload, 10_000);
@@ -36,8 +39,9 @@ function Sidebar() {
   const items: Array<{ to: string; label: string; icon: string; count?: number }> = [
     { to: '/home', label: 'Home', icon: 'home' },
     { to: '/prospects', label: 'Prospects', icon: 'prospects' },
-    { to: '/leads', label: 'Leads', icon: 'leads', count: counts?.review },
-    { to: '/outreach', label: 'Outreach', icon: 'mail', count: counts?.drafts },
+    { to: '/leads', label: 'CRM', icon: 'leads', count: counts?.review },
+    { to: '/conversations', label: 'Conversations', icon: 'chat', count: counts?.conversations },
+    { to: '/campaigns', label: 'Campaigns', icon: 'megaphone' },
     { to: '/admin', label: 'Admin', icon: 'admin' },
   ];
   const initials = (me?.name ?? me?.email ?? '?')
@@ -77,6 +81,9 @@ function Sidebar() {
 
 export function App() {
   const { status } = useAuth();
+  const { pathname } = useLocation();
+  // "Review & send" links from team emails work without signing in (the signed link is the permission).
+  if (pathname.startsWith('/act/send')) return <SendDraftPage />;
   if (status !== 'ready') return <SignInScreen />;
 
   return (
@@ -92,7 +99,9 @@ export function App() {
           <Route path="/leads" element={<LeadsPage />} />
           <Route path="/leads/new" element={<NewLeadPage />} />
           <Route path="/leads/:id" element={<LeadRedirect />} />
-          <Route path="/outreach" element={<OutreachPage />} />
+          <Route path="/conversations" element={<ConversationsPage />} />
+          <Route path="/campaigns" element={<CampaignsPage />} />
+          <Route path="/outreach" element={<Navigate to="/conversations" replace />} />
           <Route path="/admin" element={<AdminPage />} />
 
           {/* Old locations */}

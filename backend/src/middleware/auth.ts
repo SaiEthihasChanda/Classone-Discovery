@@ -35,8 +35,10 @@ const DEV_USER: AuthUser = { uid: 'dev', email: 'dev@localhost', name: 'Local de
 const INTERNAL_USER: AuthUser = { uid: 'internal', email: 'internal@localhost', name: 'Internal service', role: 'admin' };
 
 function firebaseAuth() {
-  if (getApps().length === 0) initializeApp({ projectId: env.FIREBASE_PROJECT_ID });
-  return getAuth();
+  // Look for the default app by name: the website catalog watcher registers its own named
+  // app ('website'), so "any app exists" does not mean the CRM's sign-in app does.
+  const app = getApps().find((a) => a.name === '[DEFAULT]') ?? initializeApp({ projectId: env.FIREBASE_PROJECT_ID });
+  return getAuth(app);
 }
 
 /** Upserts the signed-in person; the first sign-in of an ADMIN_EMAILS address makes them admin. */

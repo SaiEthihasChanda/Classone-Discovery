@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { refreshKeywordCatalog } from '../services/discovery/keywords.js';
 import { z } from 'zod';
 import { repositories, where, type Filter } from '../repositories/index.js';
 import { ApiError, asyncHandler } from '../middleware/errorHandler.js';
@@ -60,6 +61,29 @@ catalogRouter.post(
 );
 
 // DELETE /api/catalog/:id
+/**
+ * Edit a product's sales meaning — the AI-derived application areas and keywords of a product
+ * added from the website, for instance. Discovery's keyword sets are rebuilt straight after.
+ */
+catalogRouter.patch(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        applicationAreas: z.array(z.string().trim().min(1).max(80)).max(30),
+        tags: z.array(z.string().trim().min(1).max(80)).max(40),
+        isActive: z.boolean(),
+        description: z.string().max(3000),
+      })
+      .partial()
+      .parse(req.body ?? {});
+    const updated = await repositories.products.updateById(req.params.id!, body);
+    if (!updated) throw ApiError.notFound('Product');
+    await refreshKeywordCatalog();
+    res.json(updated);
+  }),
+);
+
 catalogRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {

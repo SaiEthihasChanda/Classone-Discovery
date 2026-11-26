@@ -513,6 +513,7 @@ export async function runRosterTests(check: Check, request: Request): Promise<vo
     assert.equal(lead.person.orcid, '0000-0002-0001-0001');
     assert.equal(lead.institution.affiliation?.status, 'current');
     assert.equal(lead.aiScoring.relevanceScore, tallur!.relevance.score);
+    assert.ok(lead.aiScoring.qualificationSignals?.productRelevance !== undefined, 'the four sub-scores reach the lead, not just the overall score');
     assert.equal(lead.status, 'pending_review');
     const again = await promoteRoster({ threshold: 40 }, noopCtx());
     assert.equal(again.promoted, 0, 'promotion is idempotent');

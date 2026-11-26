@@ -20,6 +20,27 @@
  * queries. Sources 1, 4 and 5 are phrase-matched against titles and abstracts.
  */
 import { CATALOG } from '../../scripts/catalogData.js';
+import type { Product } from '../../types/domain.js';
+
+/**
+ * The catalog the keyword sets are computed from. Starts as the seed data and is
+ * replaced with the live product_catalog (refreshKeywordCatalog) at start-up and
+ * whenever the website watcher adds or changes a product — so a product added on
+ * classonesystems.in widens discovery from the next run.
+ */
+type CatalogEntry = Pick<Product, 'productId' | 'name' | 'applicationAreas' | 'tags' | 'isActive'>;
+let liveCatalog: CatalogEntry[] = CATALOG;
+
+export function setKeywordCatalog(products: CatalogEntry[]): void {
+  if (products.length) liveCatalog = products;
+}
+
+export async function refreshKeywordCatalog(): Promise<number> {
+  const { repositories } = await import('../../repositories/index.js');
+  const products = await repositories.products.findActive();
+  setKeywordCatalog(products);
+  return products.length;
+}
 import {
   DEFAULT_INSTRUMENT_BRANDS,
   KNOWN_COMPETITOR_MODELS,
@@ -155,7 +176,7 @@ function dedupe(phrases: string[]): string[] {
 export function modelNamesFromCatalog(): string[] {
   const names: string[] = [];
 
-  for (const product of CATALOG) {
+  for (const product of liveCatalog) {
     // Multi-word model names ("EmStat Pico", "Sensit BT") are kept whole; the
     // rest contribute their distinctive token only.
     const words = product.name.split(/[\s/(),]+/).filter(Boolean);
@@ -262,7 +283,7 @@ function distinctiveTags(products: Array<{ tags: string[] }>): string[] {
 export function buildKeywordGroups(
   brands: InstrumentBrandConfig[] = DEFAULT_INSTRUMENT_BRANDS,
 ): KeywordGroup[] {
-  const activeProducts = CATALOG.filter((p) => p.isActive);
+  const activeProducts = liveCatalog.filter((p) => p.isActive);
 
   return [
     {

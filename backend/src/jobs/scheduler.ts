@@ -1,8 +1,9 @@
 /**
  * Scheduled jobs.
  *
- * Off by default (`CRON_ENABLED=false`) so a developer running the app does not
- * silently trigger live API calls and AI spend. Turn it on deliberately.
+ * Discovery is off by default (`CRON_ENABLED=false`) so a developer running the
+ * app does not silently trigger live API calls and AI spend. The follow-up check
+ * always runs (every FOLLOWUP_CHECK_MINUTES): it only drafts, never sends.
  */
 import cron, { type ScheduledTask } from 'node-cron';
 import { env } from '../config/env.js';
@@ -43,9 +44,16 @@ async function weeklyDiscoveryJob(): Promise<void> {
   }
 }
 
+let followUpTimer: NodeJS.Timeout | null = null;
+
 export function startScheduler(): void {
+  // Follow-ups: drafting only (never sending), so it runs whenever the app is up — CRON_ENABLED gates discovery alone.
+  const followUpTick = () => void runFollowUpCheck().catch((e) => console.error('[follow-ups] check failed:', e instanceof Error ? e.message : e));
+  followUpTimer = setInterval(followUpTick, env.FOLLOWUP_CHECK_MINUTES * 60_000);
+  console.log(`[follow-ups] checking every ${env.FOLLOWUP_CHECK_MINUTES} min (drafts after ${env.FOLLOWUP_WAIT_DAYS} day(s) of silence)`);
+
   if (!env.CRON_ENABLED) {
-    console.log('[cron] disabled (set CRON_ENABLED=true in .env to enable scheduled runs)');
+    console.log('[cron] discovery disabled (set CRON_ENABLED=true in .env to enable scheduled discovery)');
     return;
   }
 
@@ -58,16 +66,11 @@ export function startScheduler(): void {
 
   tasks.push(cron.schedule(env.CRON_DISCOVERY_SCHEDULE, () => void weeklyDiscoveryJob()));
   console.log(`[cron] discovery scheduled: ${env.CRON_DISCOVERY_SCHEDULE}`);
-
-  if (!cron.validate(env.CRON_FOLLOWUP_CHECK_SCHEDULE)) {
-    console.error(`[cron] invalid CRON_FOLLOWUP_CHECK_SCHEDULE "${env.CRON_FOLLOWUP_CHECK_SCHEDULE}" — follow-up check not started`);
-    return;
-  }
-  tasks.push(cron.schedule(env.CRON_FOLLOWUP_CHECK_SCHEDULE, () => void runFollowUpCheck()));
-  console.log(`[cron] follow-up check scheduled: ${env.CRON_FOLLOWUP_CHECK_SCHEDULE}`);
 }
 
 export function stopScheduler(): void {
   for (const task of tasks) task.stop();
   tasks.length = 0;
+  if (followUpTimer) clearInterval(followUpTimer);
+  followUpTimer = null;
 }

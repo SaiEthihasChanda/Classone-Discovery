@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { repositories, where } from '../repositories/index.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { approveAndSendOutreach, markReplied, rejectDraft } from '../services/email/outreachService.js';
+import { InboundEmailModel } from '../models/inboundEmail.model.js';
 
 export const threadsRouter = Router();
 
@@ -27,7 +28,7 @@ threadsRouter.get(
       options: { sort: { updatedAt: -1 }, limit: 200 },
     });
 
-    const leads = await Promise.all(items.map((t) => repositories.leads.findById(t.leadId)));
+    const leads = await Promise.all(items.map((t) => (t.leadId ? repositories.leads.findById(t.leadId) : null)));
     const enriched = items.map((thread, i) => ({
       ...thread,
       leadName: leads[i]?.person.name,
@@ -35,6 +36,22 @@ threadsRouter.get(
     }));
 
     res.json({ items: enriched });
+  }),
+);
+
+/**
+ * GET /api/threads/inbox — mail read from the sales inbox, newest first: who wrote, the lead it went to,
+ * what the AI read in it and what was done (services/email/inboxPoller.ts).
+ */
+threadsRouter.get(
+  '/inbox',
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 100, 300);
+    const items = (await InboundEmailModel.find({ status: { $ne: 'ignored' } }).sort({ receivedAt: -1 }).limit(limit).lean()) as Array<Record<string, any>>;
+    const leads = await Promise.all(items.map((m) => (m.leadId ? repositories.leads.findById(m.leadId) : null)));
+    res.json({
+      items: items.map(({ _id, ...m }, i) => ({ id: String(_id), ...m, leadName: leads[i]?.person.name, leadInstitution: leads[i]?.institution.name, leadStatus: leads[i]?.status })),
+    });
   }),
 );
 

@@ -180,7 +180,7 @@ export function LeadRecord({ id, onClose, onChanged }: { id: string; onClose: ()
     }
   }
 
-  /** Drafts (or refreshes) this lead's next outreach message. Never sends — see the Outreach page. */
+  /** Drafts (or refreshes) this lead's next outreach message. Never sends — review it in Conversations. */
   async function draftOutreachNow() {
     if (!lead) return;
     setDrafting(true);
@@ -188,7 +188,7 @@ export function LeadRecord({ id, onClose, onChanged }: { id: string; onClose: ()
     setThreadNote(null);
     try {
       await api.draftOutreach(lead.id);
-      setThreadNote('Drafted — review and send it from the Outreach page.');
+      setThreadNote('Drafted — review and send it in Conversations.');
       reload();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Could not draft outreach');
@@ -497,8 +497,8 @@ export function LeadRecord({ id, onClose, onChanged }: { id: string; onClose: ()
             )}
             {lead.threads.length === 0 ? (
               <p className="muted small" style={{ margin: '10px 0 0' }}>
-                No outreach yet. "Draft outreach" writes the first-touch email — approve it on the{' '}
-                <Link to="/outreach">Outreach page</Link> to send it.
+                No outreach yet. "Draft outreach" writes the first-touch email — review and send it in{' '}
+                <Link to={`/conversations?person=${encodeURIComponent(lead.person.email ?? '')}`}>Conversations</Link>.
               </p>
             ) : (
               <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
@@ -509,7 +509,8 @@ export function LeadRecord({ id, onClose, onChanged }: { id: string; onClose: ()
                         <strong>{thread.subjectLine}</strong>
                         <div className="muted small">
                           {thread.status === 'draft' ? 'Pending draft' : thread.status} ·{' '}
-                          {thread.messages.length} sent · {thread.followUp.attemptsSent}/{thread.followUp.maxAttempts} follow-ups
+                          {thread.messages.filter((m) => m.direction === 'outbound').length} sent · {thread.messages.filter((m) => m.direction === 'inbound').length} received ·{' '}
+                          {thread.followUp.attemptsSent}/{thread.followUp.maxAttempts} follow-ups
                         </div>
                       </div>
                       {thread.status === 'draft' && (
@@ -541,9 +542,12 @@ export function LeadRecord({ id, onClose, onChanged }: { id: string; onClose: ()
                         <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
                           {thread.messages.map((m) => (
                             <li key={m.messageId} className="small" style={{ marginBottom: 6 }}>
-                              <strong>{m.direction === 'outbound' ? 'Sent' : 'Received'}</strong> · {m.type} ·{' '}
+                              <strong>{m.direction === 'outbound' ? 'Sent' : 'They wrote'}</strong> · {m.direction === 'inbound' && m.intent ? m.intent.replace(/_/g, ' ') : m.type.replace(/_/g, ' ')} ·{' '}
                               {formatDate(m.sentAt)}
                               <div className="muted">{m.subject}</div>
+                              {m.direction === 'inbound' && (
+                                <div style={{ whiteSpace: 'pre-wrap', marginTop: 2 }}>{m.summary ? <em>{m.summary}</em> : m.bodyText.slice(0, 400)}</div>
+                              )}
                             </li>
                           ))}
                         </ul>

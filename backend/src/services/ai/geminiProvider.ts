@@ -117,6 +117,15 @@ const isCapacityError = (error: unknown) => error instanceof GeminiHttpError && 
 const COOLDOWN_MINUTES = { busy: 2, quota: 10, missing: 60 };
 const cooldowns = new Map<string, number>();
 
+/** Each model and whether it is cooling down after a failure (busy / out of quota) — for the dashboard's alerts. */
+export function geminiModelStatus(): Array<{ model: string; coolingUntil?: Date }> {
+  const now = Date.now();
+  return geminiModels().map((model) => {
+    const until = cooldowns.get(model);
+    return until && until > now ? { model, coolingUntil: new Date(until) } : { model };
+  });
+}
+
 /** Test seam: forget which models are cooling down. */
 export function resetGeminiCooldowns(): void {
   cooldowns.clear();
@@ -146,6 +155,80 @@ function instrumentNoteOf(candidate: DiscoveredCandidate): string {
     : '';
 }
 
+/** Primary model first, then GEMINI_FALLBACK_MODELS, without duplicates. */
+export function geminiModels(primary = env.GEMINI_MODEL): string[] {
+  return [...new Set([primary, ...parseModelList(env.GEMINI_FALLBACK_MODELS)])];
+}
+
+/**
+ * One generateContent call, trying each model in turn while the failure is
+ * the model's (busy, quota, not found). Models cooling down from a recent
+ * failure go to the back of the line rather than being dropped, so a call
+ * always tries every model before giving up. Shared by scoring and outreach
+ * drafting, so both see the same cooldowns.
+ */
+export async function geminiGenerate(opts: {
+  apiKey: string;
+  models: string[];
+  systemPrompt: string;
+  userPrompt: string;
+  generationConfig: Record<string, unknown>;
+  timeoutMs: number;
+  /** Someone is waiting on this (a button click): one try per model, no retry pauses. */
+  interactive?: boolean;
+}): Promise<{ text: string; model: string }> {
+  const { apiKey, models, systemPrompt, userPrompt, generationConfig, timeoutMs, interactive } = opts;
+  const t = Date.now();
+  const ready = models.filter((m) => (cooldowns.get(m) ?? 0) <= t);
+  const order = [...ready, ...models.filter((m) => !ready.includes(m))];
+  let lastError: unknown;
+  for (const [i, model] of order.entries()) {
+    const hasNext = i < order.length - 1;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    let response: Response;
+    try {
+      response = await geminiFetch(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+            generationConfig,
+          }),
+        },
+        timeoutMs,
+        // With another model to try, leave a busy one after a single short retry.
+        interactive ? [] : hasNext ? [2_000] : undefined,
+      );
+    } catch (error) {
+      // Timed out or the connection dropped, after geminiFetch's own retries.
+      // Keep an earlier answer from Google (e.g. 429 quota) as the reason: it says more than a timeout.
+      if (!(lastError instanceof GeminiHttpError)) lastError = error;
+      cooldowns.set(model, Date.now() + COOLDOWN_MINUTES.busy * 60_000);
+      continue;
+    }
+    if (response.ok) {
+      cooldowns.delete(model);
+      const data = (await response.json()) as GeminiResponse;
+      const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? '').join('').trim();
+      if (!text) throw new Error(`Gemini returned no content (finishReason: ${data.candidates?.[0]?.finishReason ?? 'unknown'}, ${model})`);
+      return { text, model };
+    }
+    const body = await response.text().catch(() => '');
+    // A 429 names the exhausted quota (per minute vs per day) in its details — keep that, it says when to expect relief.
+    const quota = [...new Set([...body.matchAll(/"quotaId":\s*"([^"]+)"/g)].map((m) => m[1]))].join(', ');
+    lastError = new GeminiHttpError(`Gemini ${response.status} ${response.statusText} (${model})${quota ? ` — quota ${quota}` : ''}: ${body.slice(0, 300)}`, response.status);
+    const kind = response.status === 429 ? 'quota' : response.status === 404 ? 'missing' : response.status >= 500 ? 'busy' : null;
+    if (!kind) throw lastError; // bad key, bad request: no other model will do better
+    // A spent daily quota won't come back in minutes: skip that model for an hour.
+    const minutes = kind === 'quota' && /PerDay/i.test(quota) ? COOLDOWN_MINUTES.missing : COOLDOWN_MINUTES[kind];
+    cooldowns.set(model, Date.now() + minutes * 60_000);
+  }
+  throw lastError;
+}
+
 export class GeminiProvider implements AiProvider {
   readonly name: string;
   readonly billable = false;
@@ -159,61 +242,15 @@ export class GeminiProvider implements AiProvider {
     this.models = [...new Set([model, ...fallbacks])];
   }
 
-  /**
-   * One generateContent call, trying each model in turn while the failure is
-   * the model's (busy, quota, not found). Models cooling down from a recent
-   * failure go to the back of the line rather than being dropped, so a call
-   * always tries every model before giving up.
-   */
-  private async generate(userPrompt: string, schema: object, timeoutMs: number): Promise<{ text: string; model: string }> {
-    const t = Date.now();
-    const ready = this.models.filter((m) => (cooldowns.get(m) ?? 0) <= t);
-    const order = [...ready, ...this.models.filter((m) => !ready.includes(m))];
-    let lastError: unknown;
-    for (const [i, model] of order.entries()) {
-      const hasNext = i < order.length - 1;
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
-      let response: Response;
-      try {
-        response = await geminiFetch(
-          url,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: LEAD_SCORING_SYSTEM_PROMPT }] },
-              contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-              generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: schema },
-            }),
-          },
-          timeoutMs,
-          // With another model to try, leave a busy one after a single short retry.
-          hasNext ? [2_000] : undefined,
-        );
-      } catch (error) {
-        // Timed out or the connection dropped, after geminiFetch's own retries.
-        lastError = error;
-        cooldowns.set(model, Date.now() + COOLDOWN_MINUTES.busy * 60_000);
-        continue;
-      }
-      if (response.ok) {
-        cooldowns.delete(model);
-        const data = (await response.json()) as GeminiResponse;
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!text) throw new Error(`Gemini returned no content (finishReason: ${data.candidates?.[0]?.finishReason ?? 'unknown'}, ${model})`);
-        return { text, model };
-      }
-      const body = await response.text().catch(() => '');
-      // A 429 names the exhausted quota (per minute vs per day) in its details — keep that, it says when to expect relief.
-      const quota = [...new Set([...body.matchAll(/"quotaId":\s*"([^"]+)"/g)].map((m) => m[1]))].join(', ');
-      lastError = new GeminiHttpError(`Gemini ${response.status} ${response.statusText} (${model})${quota ? ` — quota ${quota}` : ''}: ${body.slice(0, 300)}`, response.status);
-      const kind = response.status === 429 ? 'quota' : response.status === 404 ? 'missing' : response.status >= 500 ? 'busy' : null;
-      if (!kind) throw lastError; // bad key, bad request: no other model will do better
-      // A spent daily quota won't come back in minutes: skip that model for an hour.
-      const minutes = kind === 'quota' && /PerDay/i.test(quota) ? COOLDOWN_MINUTES.missing : COOLDOWN_MINUTES[kind];
-      cooldowns.set(model, Date.now() + minutes * 60_000);
-    }
-    throw lastError;
+  private generate(userPrompt: string, schema: object, timeoutMs: number): Promise<{ text: string; model: string }> {
+    return geminiGenerate({
+      apiKey: this.apiKey,
+      models: this.models,
+      systemPrompt: LEAD_SCORING_SYSTEM_PROMPT,
+      userPrompt,
+      generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: schema },
+      timeoutMs,
+    });
   }
 
   private toResult(parsed: ParsedResult, catalog: Product[], model: string): EnrichmentResult {

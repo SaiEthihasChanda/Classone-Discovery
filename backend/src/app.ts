@@ -13,6 +13,8 @@ export function createApp() {
       credentials: true,
     }),
   );
+  // Campaign image uploads arrive as base64 JSON: this route alone may be larger.
+  app.use('/api/campaigns/assets', express.json({ limit: '3mb' }));
   app.use(express.json({ limit: '1mb' }));
 
   if (!env.isProduction) {

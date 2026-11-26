@@ -153,7 +153,7 @@ export async function notifyFinishedRuns(now = new Date(), transport: EmailTrans
       .lean()) as Array<{ person: { name: string }; institution?: { name?: string }; relevance?: { score?: number } }>;
     const email = buildRunEmail(run, p, top.map((m) => ({ name: m.person.name, institute: m.institution?.name, score: m.relevance?.score })), now, settings);
     try {
-      await transport.send({ to, ...email });
+      await transport.send({ to, ...email, internal: true });
       await RosterRunModel.updateOne({ _id: run._id }, { $unset: { 'notification.error': '' } });
       sent += 1;
     } catch (error) {

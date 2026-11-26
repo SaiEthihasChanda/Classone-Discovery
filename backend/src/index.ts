@@ -12,6 +12,10 @@ import { startScheduler, stopScheduler } from './jobs/scheduler.js';
 import { startFlowEngine, stopFlowEngine } from './services/pipeline/flowEngine.js';
 import { startScheduleTicker, stopScheduleTicker } from './services/pipeline/pipelineRuns.js';
 import { startRunNotifier, stopRunNotifier } from './services/pipeline/runNotifier.js';
+import { startInboxPoller, stopInboxPoller } from './services/email/inboxPoller.js';
+import { startCampaignSender, stopCampaignSender } from './services/campaigns/campaignService.js';
+import { startReplyWatch, stopReplyWatch } from './services/email/replyWatch.js';
+import { startCatalogWatcher, stopCatalogWatcher } from './services/catalog/catalogWatcher.js';
 import { getAiProvider } from './services/ai/enrichmentService.js';
 
 async function main(): Promise<void> {
@@ -28,6 +32,14 @@ async function main(): Promise<void> {
   });
 
   startScheduler();
+  // Reads the sales inbox for replies and enquiries (Gmail only). Off with INBOX_POLL_SECONDS=0.
+  startInboxPoller();
+  // Sends running campaigns one email at a time, at their pace, within CAMPAIGN_DAILY_CAP.
+  startCampaignSender();
+  // Overdue-reply digest to the team, and holding replies for people set to auto-reply.
+  startReplyWatch();
+  // New products on classonesystems.in → CRM catalog, discovery keywords, launch campaigns.
+  startCatalogWatcher();
   // The Prospects conveyor and its scheduled runs. Off with FLOW_ENGINE=off (e.g. a second instance).
   if (process.env.FLOW_ENGINE !== 'off') {
     await startFlowEngine();
@@ -38,6 +50,10 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(`\n[api] ${signal} received, shutting down`);
     stopScheduler();
+    stopInboxPoller();
+    stopCampaignSender();
+    stopReplyWatch();
+    stopCatalogWatcher();
     stopFlowEngine();
     stopScheduleTicker();
     stopRunNotifier();

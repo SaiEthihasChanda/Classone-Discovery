@@ -4,9 +4,9 @@
  * web search, so it never touches the billed backfill key.
  */
 import { env } from '../../config/env.js';
-import { geminiFetch } from '../../integrations/geminiFetch.js';
+import { geminiGenerate, geminiModels } from '../ai/geminiProvider.js';
 import { repositories } from '../../repositories/index.js';
-import type { Lead } from '../../types/domain.js';
+import type { EmailThread, Lead } from '../../types/domain.js';
 
 export interface OutreachDraft {
   subject: string;
@@ -24,6 +24,15 @@ Rules:
 - Sign off as "Team Class One Systems".
 - Output ONLY the email body, no subject line, no preamble, no markdown.`;
 
+const FOLLOW_UP_PROMPT = `You write short follow-up emails for Class One Systems (classonesystems.in), an Indian supplier of electrochemical research instrumentation (PalmSens, CorrTest, TOB battery equipment and accessories). The researcher has NOT replied to the earlier email(s) shown.
+
+Rules:
+- 60-110 words. Polite, low-pressure, no guilt-tripping ("just checking in", "did you see my email") and no exclamation marks.
+- Do not repeat the earlier email. Add ONE new, useful angle tied to their work: a specific application, a product capability, or an offer (a demo, an application note, a loaner unit).
+- The last follow-up (stated below) says this is the final note and leaves the door open.
+- One clear call to action. Sign off as "Team Class One Systems".
+- Output ONLY the email body, no subject line, no preamble, no markdown.`;
+
 function buildUserPrompt(lead: Lead, productNames: string[]): string {
   return [
     `Researcher: ${lead.person.name}`,
@@ -38,39 +47,44 @@ function buildUserPrompt(lead: Lead, productNames: string[]): string {
     .join('\n');
 }
 
-export async function draftOutreachEmail(lead: Lead): Promise<OutreachDraft> {
+/**
+ * Drafts the next message for a lead: a first touch, or — given the thread so far — a follow-up that knows
+ * what was already sent (`followUpNumber` 1 or 2, `isLast` on the final one).
+ */
+export async function draftOutreachEmail(
+  lead: Lead,
+  followUp?: { thread: EmailThread; followUpNumber: number; isLast: boolean },
+  options: { interactive?: boolean } = { interactive: true },
+): Promise<OutreachDraft> {
   const apiKey = env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY is not set — outreach drafting needs the (free) scoring key.');
-  const model = env.GEMINI_MODEL;
 
   const productIds = lead.aiScoring.recommendedProductIds ?? [];
   const products = productIds.length > 0 ? await Promise.all(productIds.map((id) => repositories.products.findByProductId(id))) : [];
   const productNames = products.filter((p): p is NonNullable<typeof p> => Boolean(p)).map((p) => p.name);
 
-  const prompt = buildUserPrompt(lead, productNames);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const response = await geminiFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.4 },
-    }),
-  }, 30_000);
+  const history = followUp
+    ? [
+        '',
+        `This is follow-up ${followUp.followUpNumber}${followUp.isLast ? ' — the LAST one' : ''}. What was sent so far (oldest first):`,
+        ...followUp.thread.messages.map((m) => `--- ${m.direction === 'outbound' ? 'We sent' : 'They wrote'} on ${new Date(m.sentAt).toDateString()} — "${m.subject}":\n${m.bodyText.slice(0, 1500)}`),
+      ].join('\n')
+    : '';
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`Gemini draft ${response.status}: ${body.slice(0, 300)}`);
-  }
+  // Same models and fallbacks as scoring (and the same cooldowns), so a model out of quota is skipped here too.
+  const { text: body, model } = await geminiGenerate({
+    apiKey: apiKey.trim(),
+    models: geminiModels(),
+    systemPrompt: followUp ? FOLLOW_UP_PROMPT : SYSTEM_PROMPT,
+    userPrompt: buildUserPrompt(lead, productNames) + history,
+    generationConfig: { temperature: 0.4 },
+    // A click waits on this: one try per model, no retry pauses (the larger fallback model can take ~20 s).
+    // The background follow-up check passes interactive: false and gets the normal retries.
+    timeoutMs: 30_000,
+    interactive: options.interactive,
+  });
 
-  const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  const body = (data.candidates?.[0]?.content?.parts ?? [])
-    .map((p) => p.text ?? '')
-    .join('\n')
-    .trim();
-  if (!body) throw new Error('Gemini draft returned no content');
-
-  const subject = `Electrochemical instrumentation for ${lead.institution.name ?? 'your lab'}`;
+  const firstSubject = followUp?.thread.subjectLine;
+  const subject = firstSubject ? (firstSubject.startsWith('Re: ') ? firstSubject : `Re: ${firstSubject}`) : `Electrochemical instrumentation for ${lead.institution.name ?? 'your lab'}`;
   return { subject, body, model };
 }

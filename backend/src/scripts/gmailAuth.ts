@@ -29,7 +29,9 @@ async function main(): Promise<void> {
   const authUrl = client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent', // forces a refresh_token even if this account has authorized it before
-    scope: ['https://www.googleapis.com/auth/gmail.send'],
+    // send: outreach and replies. modify: the inbox poller reads mail (services/email/inboxPoller.ts) and marks it
+    // read when it is opened in Conversations; it never deletes, archives or labels anything.
+    scope: ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.modify'],
   });
 
   console.log('\nOpen this URL in a browser signed into the Gmail account to send from, and approve access:\n');
@@ -39,6 +41,12 @@ async function main(): Promise<void> {
   const code = await new Promise<string>((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? '', REDIRECT_URI);
+      // Browsers also ask for /favicon.ico (or prefetch): ignore anything but Google's redirect.
+      if (url.pathname !== '/oauth2callback') {
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
       const code = url.searchParams.get('code');
       const error = url.searchParams.get('error');
       res.end(

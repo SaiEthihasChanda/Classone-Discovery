@@ -29,7 +29,7 @@
     "dotenv": "^16.4.7",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
-    "firebase-admin": "^14.5.1",
+    "firebase-admin": "^13.10.0",
     "googleapis": "^190.0.0",
     "mongoose": "^8.9.5",
     "node-cron": "^4.6.0",

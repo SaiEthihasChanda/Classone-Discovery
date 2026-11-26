@@ -18,7 +18,7 @@ const messageSchema = new Schema(
     direction: { type: String, enum: ['outbound', 'inbound'], required: true },
     type: {
       type: String,
-      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2', 'reply'],
+      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2', 'reply', 'response', 'manual', 'campaign'],
       required: true,
     },
     subject: { type: String, required: true },
@@ -28,13 +28,22 @@ const messageSchema = new Schema(
     draftedBy: { type: String, enum: ['ai', 'human'] },
     approvedBy: String,
     aiDraftModel: String,
+    rfcMessageId: String,
+    fromAddress: String,
+    readAt: Date,
+    sentBy: String,
+    attachments: [{ _id: false, filename: String, mimeType: String, size: Number }],
+    intent: String,
+    summary: String,
   },
   { _id: false },
 );
 
 const emailThreadSchema = new Schema(
   {
-    leadId: { type: String, required: true, index: true },
+    leadId: { type: String, index: true },
+    contactEmail: { type: String, index: true },
+    contactName: String,
     // Snapshot so history stays truthful if the lead's email is edited later.
     leadEmailSnapshot: { type: String, required: true },
 
@@ -57,12 +66,16 @@ const emailThreadSchema = new Schema(
      */
     draftType: {
       type: String,
-      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2'],
+      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2', 'response'],
     },
     draftSubject: String,
     draftBody: String,
     draftModel: String,
     draftCreatedAt: Date,
+    draftIntent: String,
+    awaitingReplySince: { type: Date, index: true },
+    autoReplyDueAt: Date,
+    autoReplySentAt: Date,
 
     provider: { type: String, enum: ['ethereal', 'gmail'], required: true },
     providerThreadId: String,
@@ -75,7 +88,7 @@ const emailThreadSchema = new Schema(
       lastOutboundAt: Date,
       nextCheckAt: Date,
       replyDetected: { type: Boolean, default: false },
-      replyDetectionMethod: { type: String, enum: ['ai_summary', 'manual'] },
+      replyDetectionMethod: { type: String, enum: ['ai_summary', 'manual', 'gmail'] },
       replyDetectedAt: Date,
       lastAiThreadSummary: String,
       lastAiCheckAt: Date,
@@ -93,6 +106,8 @@ const emailThreadSchema = new Schema(
 emailThreadSchema.index({ status: 1, 'followUp.nextCheckAt': 1 });
 // Dashboard "open threads" tile and per-lead thread lookup.
 emailThreadSchema.index({ leadId: 1, status: 1 });
+// Matching an incoming reply to the conversation it belongs to (services/email/inboxPoller.ts).
+emailThreadSchema.index({ providerThreadId: 1 }, { sparse: true });
 
 export type EmailThreadDocument = InferSchemaType<typeof emailThreadSchema>;
 export const EmailThreadModel = model('EmailThread', emailThreadSchema);

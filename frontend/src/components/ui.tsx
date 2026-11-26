@@ -42,6 +42,18 @@ const paths: Record<string, ReactNode> = {
   expand: <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />,
   collapse: <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />,
   plus: <path d="M12 5v14M5 12h14" />,
+  chat: (
+    <>
+      <path d="M21 12a8 8 0 0 1-11.7 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z" />
+      <path d="M8.5 11h7M8.5 14h4.5" />
+    </>
+  ),
+  megaphone: (
+    <>
+      <path d="M3 10v4a1 1 0 0 0 1 1h3l6 4V5L7 9H4a1 1 0 0 0-1 1z" />
+      <path d="M17 8.5a5 5 0 0 1 0 7M7 15l1.2 4.5a1 1 0 0 0 1 .7H11" />
+    </>
+  ),
   search: (
     <>
       <circle cx="11" cy="11" r="7" />

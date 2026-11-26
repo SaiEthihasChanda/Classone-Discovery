@@ -9,6 +9,7 @@ import { estimateScanCredits, scanLeadInstruments } from '../services/discovery/
 import { enrichLeadFromWeb, enrichLeadsFromWeb } from '../services/leads/webEnrichment.js';
 import { verifyAffiliations, verifyLeadAffiliation } from '../services/leads/affiliationService.js';
 import { backfillLeadFromGemini } from '../services/ai/geminiBackfillProvider.js';
+import { GeminiHttpError } from '../services/ai/geminiProvider.js';
 import { getBackfillUsage } from '../integrations/geminiBackfillBudget.js';
 import { draftOutreachForLead } from '../services/email/outreachService.js';
 import type { Lead } from '../types/domain.js';
@@ -29,7 +30,7 @@ const csvList = z
   );
 
 const filterQuerySchema = z.object({
-  status: z.enum(['pending_review', 'approved', 'rejected', 'customer']).optional(),
+  status: z.enum(['pending_review', 'approved', 'rejected', 'customer', 'people']).optional(),
   source: z
     .enum([
       'openalex',
@@ -63,7 +64,9 @@ type FilterQuery = z.infer<typeof filterQuerySchema>;
 function buildLeadQuery(q: FilterQuery): Omit<Query, 'options'> {
   // Leads still on the Prospects conveyor (filling info) aren't ready for review yet.
   const filter: Filter = [where.ne('inPipeline', true)];
-  if (q.status) filter.push(where.eq('status', q.status));
+  // "people": everyone in the CRM proper — approved leads and customers.
+  if (q.status === 'people') filter.push(where.in('status', ['approved', 'customer']));
+  else if (q.status) filter.push(where.eq('status', q.status));
   if (q.source) filter.push(where.eq('source.type', q.source));
   if (q.minScore !== undefined) {
     filter.push(where.gte('aiScoring.relevanceScore', q.minScore));
@@ -349,7 +352,22 @@ leadsRouter.post(
 leadsRouter.post(
   '/:id/draft-outreach',
   asyncHandler(async (req, res) => {
-    res.json(await draftOutreachForLead(req.params.id!));
+    try {
+      res.json(await draftOutreachForLead(req.params.id!));
+    } catch (error) {
+      // Every model busy or out of its free daily quota: say so, rather than a bare 500.
+      const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+      if (timedOut) throw new ApiError(503, 'The AI service is slow to answer right now — try again in a few minutes.');
+      if (error instanceof GeminiHttpError && (error.status === 429 || error.status >= 500)) {
+        throw new ApiError(
+          503,
+          error.status === 429
+            ? "The AI's free daily limit is used up on every model — drafting works again when Google resets it (usually within a day), or straight away with a paid key."
+            : 'The AI service is busy right now — try again in a few minutes.',
+        );
+      }
+      throw error;
+    }
   }),
 );
 

@@ -150,6 +150,14 @@ const facultyMemberSchema = new Schema(
       score: Number,
       reasoning: String,
       recommendedProductIds: [String],
+      recommendedProductNotes: String,
+      /** The four sub-scores the AI gives with the overall score — carried onto the lead's aiScoring. */
+      signals: {
+        productRelevance: Number,
+        institutionalStrength: Number,
+        recency: Number,
+        engagementPotential: Number,
+      },
       scoredAt: Date,
       scoringModel: String,
     },

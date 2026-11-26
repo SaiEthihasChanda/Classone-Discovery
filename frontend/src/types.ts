@@ -139,9 +139,149 @@ export interface LeadInstrument {
   needsReview?: boolean;
 }
 
+// --- Campaigns ------------------------------------------------------------------------------------
+
+export type CampaignBlock =
+  | { id: string; type: 'heading'; text: string; size?: 'lg' | 'md'; align?: 'left' | 'center' | 'right' }
+  | { id: string; type: 'text'; text: string }
+  | { id: string; type: 'image'; assetId: string; alt?: string; link?: string; align?: 'left' | 'center' | 'right'; width?: 'full' | 'large' | 'medium' | 'small' }
+  | { id: string; type: 'button'; label: string; url: string; align?: 'left' | 'center' | 'right' | 'full'; style?: 'solid' | 'outline' }
+  | { id: string; type: 'product'; productId: string; blurb?: string; url?: string }
+  | { id: string; type: 'divider' }
+  | { id: string; type: 'spacer'; size?: 'sm' | 'md' | 'lg' };
+
+export interface CampaignAudience {
+  statuses?: Array<'pending_review' | 'approved' | 'customer'>;
+  institutes?: string[];
+  applicationAreas?: string[];
+  productIds?: string[];
+  brands?: string[];
+  tags?: string[];
+  minScore?: number;
+  search?: string;
+  /** Pre-picked people (new-product launches: the AI's relevance pick). The filters narrow within it. */
+  leadIds?: string[];
+}
+
+export type CampaignStatus = 'draft' | 'scheduled' | 'sending' | 'paused' | 'done' | 'cancelled';
+
+export interface Campaign {
+  id: string;
+  name: string;
+  subject: string;
+  preheader?: string;
+  blocks: CampaignBlock[];
+  audience: CampaignAudience;
+  status: CampaignStatus;
+  sendAt?: string;
+  paceSeconds: number;
+  startedAt?: string;
+  finishedAt?: string;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CampaignListItem extends Omit<Campaign, 'blocks'> {
+  kind?: 'manual' | 'product_launch';
+  reviewUntil?: string;
+  blockCount: number;
+  stats: { total: number; queued: number; sent: number; failed: number; skipped: number; replied: number };
+}
+
+export interface CampaignRecipient {
+  id: string;
+  leadId?: string;
+  email: string;
+  name?: string;
+  status: 'queued' | 'sent' | 'failed' | 'skipped';
+  sentAt?: string;
+  threadId?: string;
+  error?: string;
+}
+
+export interface AudiencePreview {
+  count: number;
+  alreadySent: number;
+  sample: Array<{ id: string; name?: string; email?: string; institute?: string; score?: number; status?: string }>;
+}
+
+/** Someone the sales mailbox has exchanged mail with — one panel in Conversations. */
+export interface Person {
+  email: string;
+  name: string;
+  title?: string;
+  institution?: string;
+  leadId?: string;
+  leadStatus?: LeadStatus;
+  score?: number;
+  doNotContact: boolean;
+  conversations: number;
+  unread: number;
+  needsReply: number;
+  drafts: number;
+  /** Conversations waiting longer than the overdue limit (48 h by default) for a real answer. */
+  overdue: number;
+  waitingSince?: string;
+  /** Holding replies go out for them when a reply is overdue. */
+  autoReply: boolean;
+  autoReplyDueAt?: string;
+  lastAt?: string;
+  lastSnippet?: string;
+  lastSubject?: string;
+  lastDirection?: 'inbound' | 'outbound';
+}
+
+export type PeopleFilter = 'all' | 'needs_reply' | 'overdue' | 'unread' | 'drafts' | 'leads' | 'new';
+
+export interface PersonDetail {
+  person: {
+    email: string;
+    name: string;
+    title?: string;
+    institution?: string;
+    department?: string;
+    phone?: string;
+    doNotContact: boolean;
+    autoReply: boolean;
+    /** Override of the global follow-up switch (null = follow it). */
+    followUpMode: 'auto' | 'manual' | null;
+    lastMessageAt?: string;
+  };
+  lead: { id: string; status: LeadStatus; score?: number; products: string[]; summary?: string; tags: string[] } | null;
+  threads: EmailThread[];
+}
+
+/** A mail read from the sales inbox (GET /threads/inbox). */
+export interface InboundEmail {
+  id: string;
+  gmailId: string;
+  from: string;
+  fromName?: string;
+  subject: string;
+  bodyText: string;
+  receivedAt: string;
+  leadId?: string;
+  threadId?: string;
+  matchedBy?: 'thread' | 'email' | 'new_lead';
+  intent?: string;
+  summary?: string;
+  urgency?: 'low' | 'normal' | 'high';
+  action?: string;
+  status: 'processed' | 'failed' | 'ignored';
+  error?: string;
+  attempts?: number;
+  leadName?: string;
+  leadInstitution?: string;
+  leadStatus?: string;
+}
+
 export interface EmailThread {
   id: string;
-  leadId: string;
+  /** Absent for someone not in the CRM — the conversation is with contactEmail. */
+  leadId?: string;
+  contactEmail?: string;
+  contactName?: string;
   leadEmailSnapshot: string;
   subjectLine: string;
   status: 'draft' | 'open' | 'replied' | 'closed';
@@ -154,14 +294,27 @@ export interface EmailThread {
     subject: string;
     bodyText: string;
     sentAt: string;
+    fromAddress?: string;
+    intent?: string;
+    summary?: string;
+    readAt?: string;
+    sentBy?: string;
+    draftedBy?: 'ai' | 'human';
+    attachments?: { filename: string; mimeType?: string; size?: number }[];
   }[];
   followUp: { attemptsSent: number; maxAttempts: number; nextCheckAt?: string; replyDetected: boolean };
   /** A pending, unsent draft — present only while status is 'draft'. */
-  draftType?: 'initial_outreach' | 'follow_up_1' | 'follow_up_2';
+  draftType?: 'initial_outreach' | 'follow_up_1' | 'follow_up_2' | 'response';
+  /** A `response` draft: what their mail was about. */
+  draftIntent?: string;
   draftSubject?: string;
   draftBody?: string;
   draftModel?: string;
   draftCreatedAt?: string;
+  /** Their message still waiting for a real answer (an automatic holding reply doesn't count). */
+  awaitingReplySince?: string;
+  autoReplyDueAt?: string;
+  autoReplySentAt?: string;
   createdAt: string;
 }
 
@@ -178,6 +331,10 @@ export interface Product {
   sdkSupport: string[];
   isActive: boolean;
   sourceUrl?: string;
+  aiDerived?: boolean;
+  source?: 'seed' | 'website' | 'manual';
+  images?: string[];
+  lastSyncedAt?: string;
 }
 
 export interface ActivityLogEntry {
@@ -189,15 +346,40 @@ export interface ActivityLogEntry {
   createdAt: string;
 }
 
+export type DashboardRange = '7' | '30' | '90' | 'all';
+
+/** GET /dashboard — the analytics Home (backend services/dashboard/dashboardService.ts). */
 export interface DashboardData {
-  tiles: {
-    activeCustomers: number;
-    inProgressDiscoveries: number;
-    openThreads: number;
-    criticalAlerts: number;
-  };
-  recentActivity: ActivityLogEntry[];
+  range: DashboardRange;
+  from: string | null;
   generatedAt: string;
+  headline: {
+    inCrm: { value: number; delta: number; deltaLabel: string; prev: number | null };
+    awaitingApproval: { value: number };
+    discoveriesInProgress: { value: number };
+    openConversations: { value: number };
+    overdueReplies: { value: number };
+    emailsSent: { value: number; prev: number | null };
+    replyRate: { value: number | null; prev: number | null; contacted: number; replied: number };
+  };
+  alerts: Array<{ level: 'critical' | 'warning' | 'info'; title: string; detail: string; to: string }>;
+  todo: { toReview: number; needsYou: number; conveyorFailed: number };
+  funnel: Array<{ key: string; label: string; count: number }>;
+  trends: {
+    bucketDays: number;
+    buckets: Array<{ start: string; newLeads: number; manual: number; ai: number; automatic: number; campaign: number; replies: number }>;
+  };
+  outreach: {
+    sends: { manual: number; ai: number; automatic: number; campaign: number };
+    received: number;
+    replyRate: number | null;
+    medianReplyHours: number | null;
+    followUps: { auto: number; approved: number };
+    campaigns: Array<{ id: string; name: string; kind: string; status: string; sent: number; replied: number; unsubscribed: number; replyRate: number | null }>;
+    topProducts: Array<{ productId: string; name: string; repliers: number }>;
+  };
+  team: Array<{ who: string; name: string; sent: number; approved: number; medianResponseHours: number | null; waiting: number }>;
+  activity: ActivityLogEntry[];
 }
 
 export interface Paginated<T> {

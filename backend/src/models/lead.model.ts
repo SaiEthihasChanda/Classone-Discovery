@@ -76,6 +76,7 @@ const leadSchema = new Schema(
           'manual',
           'manual_discovery_trigger',
           'faculty_roster',
+          'inbound_email',
         ],
         required: true,
       },
@@ -177,6 +178,7 @@ const leadSchema = new Schema(
 
     /** Promoted by the Prospects conveyor but still filling contact info — hidden from Leads until done. */
     inPipeline: { type: Boolean, index: true },
+    doNotContact: Boolean,
 
     tags: { type: [String], default: [] },
   },

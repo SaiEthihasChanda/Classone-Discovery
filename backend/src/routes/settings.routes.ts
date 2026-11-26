@@ -34,8 +34,8 @@ settingsRouter.get(
       followUp: {
         waitDays: env.FOLLOWUP_WAIT_DAYS,
         maxAttempts: env.FOLLOWUP_MAX_ATTEMPTS,
-        schedule: env.CRON_FOLLOWUP_CHECK_SCHEDULE,
-        cronEnabled: env.CRON_ENABLED,
+        schedule: `every ${env.FOLLOWUP_CHECK_MINUTES} min`,
+        cronEnabled: true, // the follow-up check always runs now (jobs/scheduler.ts)
       },
       ai: {
         scoringProvider: getAiProvider().name,

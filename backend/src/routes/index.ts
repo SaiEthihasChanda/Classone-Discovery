@@ -10,6 +10,9 @@ import { settingsRouter } from './settings.routes.js';
 import { adminRouter } from './admin.routes.js';
 import { rosterRouter } from './roster.routes.js';
 import { pipelineRouter } from './pipeline.routes.js';
+import { conversationsRouter } from './conversations.routes.js';
+import { campaignsRouter } from './campaigns.routes.js';
+import { publicRouter } from './public.routes.js';
 import { threadsRouter } from './threads.routes.js';
 import { usersRouter } from './users.routes.js';
 import { authenticate, authorize } from '../middleware/auth.js';
@@ -52,6 +55,8 @@ apiRouter.get(
 apiRouter.get('/me', authenticate, (req, res) => {
   res.json({ ...req.user, authEnabled: env.authEnabled });
 });
+// "Review & send" links from team emails: signed tokens, no sign-in (routes/public.routes.ts).
+apiRouter.use('/public', publicRouter);
 apiRouter.use(authenticate, authorize);
 
 apiRouter.use('/users', usersRouter);
@@ -64,3 +69,5 @@ apiRouter.use('/admin', adminRouter);
 apiRouter.use('/roster', rosterRouter);
 apiRouter.use('/pipeline', pipelineRouter);
 apiRouter.use('/threads', threadsRouter);
+apiRouter.use('/conversations', conversationsRouter);
+apiRouter.use('/campaigns', campaignsRouter);
