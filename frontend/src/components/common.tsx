@@ -123,8 +123,21 @@ export function ErrorBanner({ message }: { message: string }) {
   return <div className="alert alert-error">{message}</div>;
 }
 
+/** Shimmering placeholder while a page loads; the label is announced to screen readers. */
 export function Loading({ label = 'Loading…' }: { label?: string }) {
-  return <div className="empty">{label}</div>;
+  return (
+    <div className="skeleton" role="status" aria-live="polite">
+      <span className="visually-hidden">{label}</span>
+      <div className="sk-row">
+        <i className="sk sk-block" />
+        <i className="sk sk-block" />
+        <i className="sk sk-block" />
+      </div>
+      <i className="sk sk-line" style={{ width: '62%' }} />
+      <i className="sk sk-line" style={{ width: '88%' }} />
+      <i className="sk sk-line" style={{ width: '74%' }} />
+    </div>
+  );
 }
 
 export function EmptyState({ children }: { children: ReactNode }) {

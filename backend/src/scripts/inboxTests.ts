@@ -286,6 +286,120 @@ export async function runInboxTests(check: Check): Promise<void> {
       assert.equal(r.status, 'processed');
       assert.equal(r.intent, 'support_request');
     });
+
+    await check('a mail that keeps failing stops being retried after its last attempt', async () => {
+      aiDown = true;
+      const m = mail('lead.person@example.org', '[support_request] Still broken');
+      await pollInbox(source);
+      await InboundEmailModel.updateOne({ gmailId: m.gmailId }, { $set: { attempts: 5 } });
+      assert.deepEqual(await pollInbox(source), { processed: 0, failed: 0 }, 'not picked up again');
+      aiDown = false;
+      box.delete(m.gmailId);
+    });
+
+    await check('an automatic reply never reopens a finished conversation', async () => {
+      const t = await repositories.threads.create({ leadId: lead.id, leadEmailSnapshot: 'lead.person@example.org', subjectLine: 'done', status: 'closed', closedReason: 'replied', provider: 'gmail', providerThreadId: 'gt-closed', messages: [], followUp: { attemptsSent: 1, maxAttempts: 2, replyDetected: true } });
+      mail('lead.person@example.org', 'Automatic reply: away', { gmailThreadId: 'gt-closed', automatic: true });
+      await pollInbox(source);
+      const after = (await repositories.threads.findById(t.id))!;
+      assert.equal(after.status, 'closed');
+      assert.equal(after.followUp.nextCheckAt, undefined);
+    });
+
+    await check('when they write a fresh email, their other conversations stop following up', async () => {
+      const old = await repositories.threads.create({ leadId: lead.id, leadEmailSnapshot: 'lead.person@example.org', subjectLine: 'our outreach', status: 'open', provider: 'gmail', providerThreadId: 'gt-old-outreach', messages: [], followUp: { attemptsSent: 0, maxAttempts: 2, replyDetected: false, nextCheckAt: new Date(Date.now() + 86_400_000) } });
+      mail('lead.person@example.org', '[quote_request] Can you send a quote?', { gmailThreadId: 'gt-fresh' });
+      await pollInbox(source);
+      const after = (await repositories.threads.findById(old.id))!;
+      assert.equal(after.status, 'replied');
+      assert.equal(after.followUp.nextCheckAt, undefined);
+      assert.equal(after.followUp.replyDetected, true);
+    });
+
+    await check('the same message is never recorded twice on a conversation', async () => {
+      const t = await repositories.threads.create({ leadEmailSnapshot: 'dup@example.org', subjectLine: 'd', status: 'open', provider: 'gmail', messages: [], followUp: { attemptsSent: 0, maxAttempts: 0, replyDetected: false } });
+      const msg = { messageId: 'dup-1', direction: 'inbound' as const, type: 'reply' as const, subject: 'd', bodyText: 'x', sentAt: new Date() };
+      await repositories.threads.appendMessage(t.id, msg);
+      const again = await repositories.threads.appendMessage(t.id, msg);
+      assert.equal(again!.messages.length, 1);
+      await repositories.threads.deleteById(t.id);
+    });
+
+    await check('conversation addresses are stored and matched in lowercase', async () => {
+      const { EmailThreadModel } = await import('../models/emailThread.model.js');
+      const t = await repositories.threads.create({ contactEmail: 'Mixed.Case@Example.ORG', leadEmailSnapshot: 'Mixed.Case@Example.ORG', subjectLine: 'c', status: 'open', provider: 'gmail', messages: [], followUp: { attemptsSent: 0, maxAttempts: 0, replyDetected: false } });
+      assert.equal(t.contactEmail, 'mixed.case@example.org');
+      assert.ok(await EmailThreadModel.exists({ contactEmail: 'MIXED.case@example.org' }), 'query is lowercased too');
+      await repositories.threads.deleteById(t.id);
+    });
+
+    await check('a mail the app sent is not recorded again from the Sent folder, even before the app has saved it', async () => {
+      const { processSentMail } = await import('../services/email/inboxPoller.js');
+      const gmailId = `app-sent-${Date.now()}`;
+      await processSentMail({ gmailId, from: 'us@x', to: 'lead.person@example.org', subject: 's', bodyText: 'b', receivedAt: new Date(), fromApp: true });
+      const r = (await InboundEmailModel.findOne({ gmailId }).lean()) as any;
+      assert.equal(r.action, 'Sent from the app');
+      assert.equal(await (await import('../models/emailThread.model.js')).EmailThreadModel.countDocuments({ 'messages.messageId': gmailId }), 0);
+    });
+
+    await check('a new message whose send fails leaves no empty conversation behind', async () => {
+      const { composeMessage } = await import('../services/email/conversationService.js');
+      const { EmailThreadModel } = await import('../models/emailThread.model.js');
+      setEmailTransport({ name: 'gmail', send: async () => { throw new Error('Gmail 400 (test)'); } });
+      await assert.rejects(() => composeMessage({ to: 'nobody.here@example.org', subject: 'Hi', body: 'Hello' }), /Gmail 400/);
+      assert.equal(await EmailThreadModel.countDocuments({ contactEmail: 'nobody.here@example.org' }), 0);
+    });
+
+    await check('after downtime the poller catches up from the last mail it handled, at most 30 days back', async () => {
+      const { catchUpWindow } = await import('../services/email/inboxPoller.js');
+      const now = new Date('2026-11-26T10:00:00Z');
+      const day = 86_400_000;
+      assert.equal(catchUpWindow(null, now), null, 'never read anything: nothing to catch up');
+      assert.equal(catchUpWindow(new Date(now.getTime() - day), now), null, 'inside the normal 2-day view');
+      assert.equal(catchUpWindow(new Date(now.getTime() - 5 * day), now)!.after.getTime(), now.getTime() - 5 * day - 3_600_000);
+      assert.equal(catchUpWindow(new Date(now.getTime() - 90 * day), now)!.after.getTime(), now.getTime() - 30 * day);
+    });
+
+    await check('history import: old mail lands on the right conversations, read, with no AI, no draft and no waiting clock', async () => {
+      const { startHistoryImport, historyImportStatus } = await import('../services/email/inboxPoller.js');
+      const { EmailThreadModel } = await import('../models/emailThread.model.js');
+      const old = new Date(Date.now() - 60 * 86_400_000);
+      const hist = new Map<string, any>();
+      const add = (id: string, m: Record<string, unknown>) => hist.set(id, { gmailId: id, subject: 'Old', bodyText: 'old body', receivedAt: old, ...m });
+      add(`h-lead-${Date.now()}`, { from: 'lead.person@example.org', subject: '[quote_request] Old quote ask' });
+      add(`h-new-${Date.now()}`, { from: 'someone.old@example.org', fromName: 'Old Correspondent' });
+      add(`h-sent-${Date.now()}`, { from: 'us@x', to: 'someone.old@example.org', subject: 'Re: Old', receivedAt: new Date(old.getTime() + 3_600_000) });
+      const sentIds = [...hist.keys()].filter((k) => k.startsWith('h-sent'));
+      const histSource = {
+        listRecentIds: async () => [],
+        get: async (id: string) => hist.get(id) ?? null,
+        listIdsBetween: async (folder: 'inbox' | 'sent') => [...hist.keys()].filter((k) => (folder === 'sent') === sentIds.includes(k)),
+      };
+      aiDown = true; // any AI call would fail the import
+      await startHistoryImport(new Date(old.getTime() - 86_400_000), new Date(), histSource as never);
+      let st = await historyImportStatus();
+      for (let i = 0; i < 100 && st?.status === 'running'; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        st = await historyImportStatus();
+      }
+      aiDown = false;
+      assert.equal(st?.status, 'done');
+      assert.equal(st?.found, 3);
+      assert.equal(st?.failed, 0);
+      const leadThread = (await EmailThreadModel.findOne({ 'messages.messageId': [...hist.keys()][0] }).lean()) as any;
+      const m = leadThread.messages.find((x: any) => x.messageId === [...hist.keys()][0]);
+      assert.ok(m.readAt, 'counted as read');
+      assert.equal(leadThread.leadId, lead.id);
+      const stranger = (await EmailThreadModel.findOne({ contactEmail: 'someone.old@example.org' }).lean()) as any;
+      assert.equal(stranger.messages.length, 2, 'their mail and our answer, one conversation');
+      assert.equal(stranger.status, 'replied');
+      assert.equal(stranger.draftBody, undefined);
+      assert.equal(stranger.awaitingReplySince, undefined);
+      assert.equal(stranger.followUp.nextCheckAt, undefined, 'no follow-up scheduled from old mail');
+      const { LeadModel } = await import('../models/lead.model.js');
+      assert.equal(await LeadModel.exists({ 'person.email': 'someone.old@example.org' }), null, 'no lead made without the AI');
+      await EmailThreadModel.deleteMany({ contactEmail: 'someone.old@example.org' });
+    });
   } finally {
     setTriageFn(null);
     setEmailTransport(null);

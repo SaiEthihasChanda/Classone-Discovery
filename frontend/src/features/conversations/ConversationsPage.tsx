@@ -16,7 +16,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
 import { ErrorBanner, Loading, ScorePill, StatusBadge, relativeTime, shortInstitute } from '../../components/common';
-import { Icon, Modal } from '../../components/ui';
+import { Icon, Modal, Segmented } from '../../components/ui';
 import { AnimatePresence, cardMotion, motion } from '../../components/motion';
 import type { EmailThread, Person, PersonDetail } from '../../types';
 
@@ -132,13 +132,16 @@ function FollowUpSwitch() {
   return (
     <div className="followup-switch" title="Auto: due follow-ups are sent by themselves and the team is told. Manual: they wait in Needs you.">
       <span className="muted small">Follow-ups</span>
-      <div className="segmented" role="radiogroup">
-        {(['manual', 'auto'] as const).map((m) => (
-          <button key={m} role="radio" aria-checked={mode === m} className={mode === m ? 'active' : ''} disabled={busy || !can('sales')} onClick={() => mode !== m && void change(m)}>
-            {m === 'auto' ? 'Auto' : 'Manual'}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        label="Follow-up mode"
+        items={[
+          { key: 'manual', label: 'Manual' },
+          { key: 'auto', label: 'Auto' },
+        ]}
+        value={mode}
+        disabled={busy || !can('sales')}
+        onChange={(m) => void change(m)}
+      />
     </div>
   );
 }

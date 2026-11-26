@@ -10,10 +10,12 @@ import {
 } from '../../api/client';
 import { useAsync } from '../../hooks/useAsync';
 import { ErrorBanner, Loading } from '../../components/common';
+import { Tabs } from '../../components/ui';
+import { MailboxTab } from './MailboxTab';
 
 const KINDS: InstitutionKind[] = ['IIT', 'NIT', 'IIIT'];
 
-type Tab = 'keywords' | 'institutions' | 'sources' | 'scraping' | 'outreach' | 'danger';
+type Tab = 'keywords' | 'institutions' | 'sources' | 'scraping' | 'outreach' | 'mailbox' | 'danger';
 
 /**
  * Settings — everything that governs discovery, editable without touching files.
@@ -113,28 +115,19 @@ export function SettingsPage() {
         <div className="alert alert-info">You have unsaved changes.</div>
       )}
 
-      <div className="tabs" role="tablist">
-        {(
-          [
-            ['keywords', 'Search keywords'],
-            ['institutions', 'Institutions'],
-            ['sources', 'Scrape sources'],
-            ['scraping', 'Scraping behaviour'],
-            ['outreach', 'Email & AI'],
-            ['danger', 'Danger zone'],
-          ] as [Tab, string][]
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            role="tab"
-            aria-selected={tab === key}
-            className={`tab${tab === key ? ' active' : ''}`}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <Tabs<Tab>
+        items={[
+          { key: 'keywords', label: 'Search keywords' },
+          { key: 'institutions', label: 'Institutions' },
+          { key: 'sources', label: 'Scrape sources' },
+          { key: 'scraping', label: 'Scraping behaviour' },
+          { key: 'outreach', label: 'Email & AI' },
+          { key: 'mailbox', label: 'Mailbox' },
+          { key: 'danger', label: 'Danger zone' },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
 
       {tab === 'keywords' && (
         <KeywordsTab draft={draft} update={update} config={discoveryConfig} />
@@ -145,6 +138,7 @@ export function SettingsPage() {
       {tab === 'sources' && <SourcesTab draft={draft} update={update} reload={reload} />}
       {tab === 'scraping' && <ScrapingTab draft={draft} update={update} />}
       {tab === 'outreach' && <OutreachTab />}
+      {tab === 'mailbox' && <MailboxTab />}
       {tab === 'danger' && <DangerZoneTab />}
     </>
   );

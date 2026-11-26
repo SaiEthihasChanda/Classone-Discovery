@@ -195,6 +195,15 @@ export async function runLaunchTests(check: Check): Promise<void> {
       await launch.setLaunchSettings({ mode: 'manual' });
     });
 
+    await check('a launch campaign sends only inside the Mon–Sat 09:00–18:00 IST window', async () => {
+      const { campaignTick } = await import('../services/campaigns/campaignService.js');
+      const l = (await watcher.ProductLaunchModel.findOne({ productId: 'launch-test-cycler-2' }).lean())!;
+      await CampaignModel.updateOne({ _id: l.campaignId }, { $set: { status: 'sending' } });
+      const sunday = istAt(2026, 11, 29, 11);
+      assert.equal(await campaignTick(sunday), 'idle');
+      assert.equal(await CampaignRecipientModel.countDocuments({ campaignId: l.campaignId, status: 'queued' }), 2, 'nothing sent on Sunday');
+    });
+
     await check('a product taken off the website before its announcement goes out: the campaign is cancelled, the launch withdrawn', async () => {
       const l = (await watcher.ProductLaunchModel.findOne({ productId: 'launch-test-cycler-2' }).lean())!;
       const i = site.findIndex((p) => p.slug === 'launch-test-cycler-2');

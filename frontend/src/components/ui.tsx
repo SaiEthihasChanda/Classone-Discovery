@@ -2,7 +2,8 @@
  * Shared UI primitives: icons, drawer (with expand → full-screen overlay),
  * modal, tabs, segmented control and the wizard step header.
  */
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useId, type ReactNode } from 'react';
+import { motion, softSpring } from './motion';
 
 // --- Icons (inline SVG, 18px, stroke = currentColor) ------------------------------------
 const paths: Record<string, ReactNode> = {
@@ -161,12 +162,14 @@ export function Tabs<K extends string>({
   value: K;
   onChange: (k: K) => void;
 }) {
+  const id = useId();
   return (
     <div className="tabs" role="tablist">
       {items.map((t) => (
         <button key={t.key} role="tab" aria-selected={value === t.key} className={`tab${value === t.key ? ' active' : ''}`} onClick={() => onChange(t.key)}>
           {t.label}
           {t.count !== undefined && <span className="count">{t.count.toLocaleString()}</span>}
+          {value === t.key && <motion.span layoutId={`tab-${id}`} className="tab-ink" transition={softSpring} />}
         </button>
       ))}
     </div>
@@ -177,17 +180,28 @@ export function Segmented<K extends string>({
   items,
   value,
   onChange,
+  label,
+  title,
+  disabled,
 }: {
   items: Array<{ key: K; label: string; count?: number }>;
   value: K;
   onChange: (k: K) => void;
+  /** Accessible name for the group. */
+  label?: string;
+  title?: string;
+  disabled?: boolean;
 }) {
+  const id = useId();
   return (
-    <div className="segmented" role="radiogroup">
+    <div className="segmented" role="radiogroup" aria-label={label} title={title}>
       {items.map((t) => (
-        <button key={t.key} role="radio" aria-checked={value === t.key} className={value === t.key ? 'active' : ''} onClick={() => onChange(t.key)}>
-          {t.label}
-          {t.count !== undefined && <span className="count">{t.count.toLocaleString()}</span>}
+        <button key={t.key} role="radio" aria-checked={value === t.key} className={value === t.key ? 'active' : ''} disabled={disabled} onClick={() => value !== t.key && onChange(t.key)}>
+          {value === t.key && <motion.span layoutId={`seg-${id}`} className="seg-thumb" transition={softSpring} />}
+          <span className="seg-label">
+            {t.label}
+            {t.count !== undefined && <span className="count">{t.count.toLocaleString()}</span>}
+          </span>
         </button>
       ))}
     </div>

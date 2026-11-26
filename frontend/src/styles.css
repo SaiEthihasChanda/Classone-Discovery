@@ -40,6 +40,13 @@
   --mono: 'SF Mono', 'Cascadia Mono', Consolas, monospace;
 
   --sidebar-w: 232px;
+
+  /* Motion: one easing family for the whole app. Out-expo for arrivals, a gentle in-out for state. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --t-fast: 0.16s;
+  --t-med: 0.28s;
+  --t-slow: 0.48s;
 }
 
 * {
@@ -113,6 +120,7 @@ h3 {
 }
 
 .nav-link {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -120,19 +128,38 @@ h3 {
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   font-weight: 500;
+  transition: color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
+}
+.nav-link > :not(.nav-pill) {
+  position: relative;
+  z-index: 1;
 }
 .nav-link svg {
   flex-shrink: 0;
+  transition: transform var(--t-med) var(--ease-out);
 }
 .nav-link:hover {
   background: var(--surface-alt);
   color: var(--text);
   text-decoration: none;
 }
+.nav-link:hover svg {
+  transform: translateX(1px) scale(1.06);
+}
 .nav-link.active {
-  background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
+}
+.nav-link.active:hover {
+  background: transparent;
+}
+/* The active pill glides between items (shared layout animation in App.tsx). */
+.nav-pill {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(22, 38, 92, 0.06);
 }
 .nav-count {
   margin-left: auto;
@@ -490,23 +517,35 @@ tr.selected:hover {
   font-family: inherit;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out), box-shadow var(--t-med) var(--ease-out),
+    transform var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
 }
 .btn:hover:not(:disabled) {
   background: var(--surface-alt);
   text-decoration: none;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.06);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 0.06s;
 }
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 .btn-primary {
-  background: var(--accent);
+  background: linear-gradient(180deg, #1f3480 0%, var(--accent) 100%);
   border-color: var(--accent);
   color: var(--accent-contrast);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 2px rgba(22, 38, 92, 0.24);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: linear-gradient(180deg, #2a419a 0%, var(--accent-hover) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 6px 18px rgba(22, 38, 92, 0.28);
+  transform: translateY(-1px);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
 }
 .btn-success {
   background: var(--success);
@@ -768,6 +807,8 @@ label {
   scrollbar-width: none;
 }
 .tab {
+  position: relative;
+  transition: color var(--t-fast) var(--ease-out);
   padding: 10px 14px;
   background: none;
   border: none;
@@ -784,8 +825,20 @@ label {
 }
 .tab.active {
   color: var(--accent);
-  border-bottom-color: var(--accent);
   font-weight: 600;
+}
+/* Tabs not drawn by <Tabs> (no sliding ink) keep the plain underline. */
+.tab.active:not(:has(.tab-ink)) {
+  border-bottom-color: var(--accent);
+}
+.tab-ink {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 .tab .count {
   margin-left: 6px;
@@ -802,6 +855,8 @@ label {
   border-radius: var(--radius-sm);
 }
 .segmented button {
+  position: relative;
+  transition: color var(--t-fast) var(--ease-out);
   border: none;
   background: transparent;
   padding: 7px 14px;
@@ -813,10 +868,23 @@ label {
   cursor: pointer;
   white-space: nowrap;
 }
-.segmented button.active {
-  background: var(--surface);
+.segmented button:hover:not(.active) {
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1);
+}
+.segmented button.active {
+  color: var(--text);
+}
+.seg-label {
+  position: relative;
+  z-index: 1;
+}
+/* The selected thumb slides between options (shared layout animation in ui.tsx). */
+.seg-thumb {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1), 0 0 0 1px rgba(16, 24, 40, 0.03);
 }
 .segmented .count {
   margin-left: 6px;
@@ -933,9 +1001,11 @@ label {
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(26, 32, 51, 0.18);
+  background: rgba(26, 32, 51, 0.22);
+  backdrop-filter: blur(3px) saturate(1.1);
+  -webkit-backdrop-filter: blur(3px) saturate(1.1);
   z-index: 50;
-  animation: fade 0.15s ease-out;
+  animation: fade var(--t-med) var(--ease-out);
 }
 .drawer {
   position: fixed;
@@ -948,7 +1018,7 @@ label {
   z-index: 51;
   display: flex;
   flex-direction: column;
-  animation: slide-in 0.2s ease-out;
+  animation: slide-in 0.46s var(--ease-out);
 }
 .drawer.expanded {
   top: 24px;
@@ -958,7 +1028,7 @@ label {
   transform: translateX(-50%);
   width: min(1100px, calc(100vw - 48px));
   border-radius: var(--radius);
-  animation: pop 0.18s ease-out;
+  animation: pop 0.34s var(--ease-out);
 }
 .drawer-head {
   display: flex;
@@ -1023,7 +1093,7 @@ label {
   box-shadow: var(--shadow-lg);
   z-index: 51;
   padding: 28px;
-  animation: pop 0.18s ease-out;
+  animation: pop 0.34s var(--ease-out);
 }
 .modal h2 {
   margin: 0 0 4px;
@@ -1046,14 +1116,16 @@ label {
 }
 @keyframes slide-in {
   from {
-    transform: translateX(24px);
+    transform: translateX(48px);
     opacity: 0;
   }
 }
+/* Uses the separate scale/translate properties so it composes with the element's own transform. */
 @keyframes pop {
   from {
     opacity: 0;
-    margin-top: 8px;
+    scale: 0.96;
+    translate: 0 10px;
   }
 }
 
@@ -1884,9 +1956,11 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .dash-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
 .dash-tile { min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); color: var(--text); text-decoration: none; }
-.dash-tile.link:hover { border-color: var(--border-strong); }
+.dash-tile { transition: transform var(--t-med) var(--ease-out), box-shadow var(--t-med) var(--ease-out), border-color var(--t-med) var(--ease-out); }
+.dash-tile.link:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: 0 10px 28px rgba(16, 24, 40, 0.09), 0 2px 6px rgba(16, 24, 40, 0.04); text-decoration: none; }
+.dash-tile.link:active { transform: translateY(0) scale(0.985); }
 .tile-label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
-.tile-value { font-size: 28px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.tile-value { font-size: 28px; font-weight: 700; line-height: 1.1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .tile-value.warn { color: var(--danger); }
 .tile-delta { font-size: 12px; color: var(--text-muted); }
 
@@ -1900,7 +1974,7 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .funnel-row { display: grid; grid-template-columns: 110px 1fr 56px 40px; gap: 10px; align-items: center; font-size: 13px; }
 .funnel-label { color: var(--text); }
 .funnel-track { height: 14px; background: var(--surface-alt); border-radius: 4px; overflow: hidden; }
-.funnel-bar { display: block; height: 100%; background: #2a78d6; border-radius: 0 4px 4px 0; }
+.funnel-bar { display: block; height: 100%; background: #2a78d6; border-radius: 0 4px 4px 0; transform-origin: left center; animation: grow-x 0.9s var(--ease-out) both; }
 .funnel-count { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
 .funnel-conv { text-align: right; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
@@ -1942,3 +2016,70 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .dash-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
 .dash-controls .segmented { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .aud-picked { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; background: var(--surface-2, #f3f5f9); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 14px; font-size: 13px; }
+
+/* --- Motion & finish ------------------------------------------------------------------------------------ */
+::selection { background: rgba(22, 38, 92, 0.14); }
+:focus-visible { outline: 2px solid rgba(22, 38, 92, 0.45); outline-offset: 2px; }
+input, select, textarea { transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-med) var(--ease-out); }
+.card { transition: box-shadow var(--t-med) var(--ease-out), border-color var(--t-med) var(--ease-out), transform var(--t-med) var(--ease-out); }
+a.card:hover, button.card:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(16, 24, 40, 0.09), 0 2px 6px rgba(16, 24, 40, 0.04); text-decoration: none; }
+.chip { transition: background var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out), transform var(--t-fast) var(--ease-out); }
+.chip:active { transform: scale(0.95); }
+.icon-btn { transition: background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out), transform var(--t-fast) var(--ease-out); }
+.icon-btn:active { transform: scale(0.9); }
+.nav-count { display: inline-block; }
+
+/* Dashboard: sections rise in one after another. */
+.dash > * { animation: rise var(--t-slow) var(--ease-out) backwards; }
+.dash > :nth-child(2) { animation-delay: 40ms; }
+.dash > :nth-child(3) { animation-delay: 80ms; }
+.dash > :nth-child(4) { animation-delay: 120ms; }
+.dash > :nth-child(5) { animation-delay: 160ms; }
+.dash > :nth-child(6) { animation-delay: 200ms; }
+.dash > :nth-child(7) { animation-delay: 240ms; }
+.dash > :nth-child(n + 8) { animation-delay: 280ms; }
+.dash-tiles > * { animation: rise var(--t-slow) var(--ease-out) backwards; }
+.dash-tiles > :nth-child(2) { animation-delay: 30ms; }
+.dash-tiles > :nth-child(3) { animation-delay: 60ms; }
+.dash-tiles > :nth-child(4) { animation-delay: 90ms; }
+.dash-tiles > :nth-child(5) { animation-delay: 120ms; }
+.dash-tiles > :nth-child(6) { animation-delay: 150ms; }
+.dash-tiles > :nth-child(n + 7) { animation-delay: 180ms; }
+
+/* Trend chart: bars grow from the baseline, the replies line draws itself, then its dots land. */
+.bar-grow { transform-box: fill-box; transform-origin: 50% 100%; animation: grow-y 0.7s var(--ease-out) both; }
+.bar-dim { transition: opacity var(--t-med) var(--ease-out); }
+.line-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 1.1s var(--ease-in-out) 0.35s forwards; }
+.dot-pop { transform-box: fill-box; transform-origin: center; animation: dot-pop 0.4s var(--ease-out) both; transition: r var(--t-fast) var(--ease-out); }
+.chart-tip { animation: tip-in var(--t-fast) var(--ease-out); }
+
+/* Loading: a soft shimmer in the shape of a page. */
+.skeleton { display: grid; gap: 12px; padding: 8px 0 24px; }
+.sk-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 8px; }
+.sk { display: block; border-radius: var(--radius-sm); background: linear-gradient(90deg, #eef1f6 0%, #f7f9fc 40%, #eef1f6 80%); background-size: 300% 100%; animation: shimmer 1.4s var(--ease-in-out) infinite; }
+.sk-block { height: 84px; border-radius: var(--radius); }
+.sk-line { height: 14px; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+@keyframes grow-x { from { transform: scaleX(0); } }
+@keyframes grow-y { from { transform: scaleY(0); } }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes dot-pop { from { opacity: 0; transform: scale(0.2); } }
+@keyframes tip-in { from { opacity: 0; translate: 0 4px; } }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  .line-draw { stroke-dashoffset: 0; }
+}
+
+/* --- Admin · Mailbox ---------------------------------------------------------------------------------- */
+.mailbox-tab { display: grid; gap: 16px; max-width: 760px; }
+.mailbox-facts { margin: 0; padding-left: 18px; color: var(--text-muted); display: grid; gap: 4px; }
+.mailbox-range { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 14px 0 10px; }
+.mailbox-range label { margin: 0; display: grid; gap: 4px; }
+.mailbox-range input { width: auto; }
+.mailbox-status { display: grid; gap: 10px; animation: rise var(--t-slow) var(--ease-out) backwards; }
+.mailbox-status-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; justify-content: space-between; }
+.mailbox-status.failed { border-color: #f3c7c9; }
+.mailbox-error { margin: 0; color: var(--danger); }

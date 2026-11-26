@@ -12,7 +12,7 @@ import { useAuth } from './auth/AuthProvider';
 import { SignInScreen } from './auth/SignInScreen';
 import { Icon } from './components/ui';
 import { api } from './api/client';
-import { MotionConfig } from './components/motion';
+import { AnimatePresence, MotionConfig, motion, pageMotion, softSpring } from './components/motion';
 import { useAsync } from './hooks/useAsync';
 
 /** Old /leads/:id links open the same lead in the side panel. */
@@ -58,9 +58,27 @@ function Sidebar() {
       </div>
       {items.map((item) => (
         <NavLink key={item.to} to={item.to} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`} title={item.label}>
-          <Icon name={item.icon} />
-          <span className="label">{item.label}</span>
-          {item.count ? <span className="nav-count">{item.count > 999 ? '999+' : item.count}</span> : null}
+          {({ isActive }) => (
+            <>
+              {isActive && <motion.span layoutId="nav-pill" className="nav-pill" transition={softSpring} />}
+              <Icon name={item.icon} />
+              <span className="label">{item.label}</span>
+              <AnimatePresence initial={false}>
+                {item.count ? (
+                  <motion.span
+                    key={item.count}
+                    className="nav-count"
+                    initial={{ scale: 0.6, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.6, opacity: 0, position: 'absolute' }}
+                    transition={softSpring}
+                  >
+                    {item.count > 999 ? '999+' : item.count}
+                  </motion.span>
+                ) : null}
+              </AnimatePresence>
+            </>
+          )}
         </NavLink>
       ))}
       <div className="sidebar-footer">
@@ -92,6 +110,8 @@ export function App() {
     <div className="layout">
       <Sidebar />
       <main className="main">
+        {/* Each section rises in on arrival; transform settles back to none, so fixed drawers inside stay fixed. */}
+        <motion.div key={pathname.split('/')[1] || 'home'} className="page" {...pageMotion}>
         <Routes>
           <Route path="/" element={<Navigate to="/home" replace />} />
           <Route path="/home" element={<HomePage />} />
@@ -116,6 +136,7 @@ export function App() {
 
           <Route path="*" element={<div className="empty">Page not found.</div>} />
         </Routes>
+        </motion.div>
       </main>
     </div>
     </MotionConfig>

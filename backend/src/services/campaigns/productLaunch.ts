@@ -17,7 +17,7 @@
  * A launch whose AI steps fail is retried on the next watcher run (up to 5 times).
  */
 import { env } from '../../config/env.js';
-import { CampaignAssetModel } from '../../models/campaign.model.js';
+import { CampaignAssetModel, CampaignModel, CampaignRecipientModel } from '../../models/campaign.model.js';
 import type { CampaignBlock } from '../../models/campaign.model.js';
 import { ContactModel } from '../../models/contact.model.js';
 import { LeadModel } from '../../models/lead.model.js';
@@ -203,6 +203,9 @@ export async function processPendingLaunches(now = new Date()): Promise<number> 
   const pending = await ProductLaunchModel.find({ status: 'pending', attempts: { $lt: MAX_ATTEMPTS } }).lean();
   let made = 0;
   for (const launch of pending) {
+    // A campaign made on this attempt but not yet linked to the launch: removed if the attempt fails,
+    // so a retry never leaves duplicate "New product" campaigns behind.
+    let unlinked: string | null = null;
     try {
       const product = await repositories.products.findByProductId(launch.productId);
       if (!product?.isActive) {
@@ -231,6 +234,7 @@ export async function processPendingLaunches(now = new Date()): Promise<number> 
 
       const assetId = await productImageAsset(product);
       const campaign = await createCampaign({ name: `New product: ${product.name}`, createdBy: 'product-launch' });
+      unlinked = campaign.id;
       await updateCampaign(campaign.id, {
         subject: copy.subject,
         preheader: copy.preheader,
@@ -238,7 +242,6 @@ export async function processPendingLaunches(now = new Date()): Promise<number> 
         audience: { statuses: ['approved', 'customer'], leadIds: chosen.map((c) => c.id) },
         paceSeconds: 30,
       });
-      const { CampaignModel } = await import('../../models/campaign.model.js');
       let sendAt: Date | null = null;
       if (settings.mode === 'auto') {
         sendAt = nextSendWindow(new Date(now.getTime() + REVIEW_HOURS * 3_600_000));
@@ -248,6 +251,7 @@ export async function processPendingLaunches(now = new Date()): Promise<number> 
         await CampaignModel.updateOne({ _id: campaign.id }, { $set: { kind: 'product_launch', productId: product.productId } });
       }
       await ProductLaunchModel.updateOne({ _id: launch._id }, { $set: { status: 'ready', campaignId: campaign.id, recipients: chosen.length }, $unset: { error: '' } });
+      unlinked = null;
       await logActivity({
         type: 'outreach_batch_completed',
         message: `New product ${product.name}: outreach to ${chosen.length} matched ${chosen.length === 1 ? 'person' : 'people'} ${sendAt ? `scheduled for ${sendAt.toISOString()}` : 'drafted for review'}`,
@@ -256,6 +260,10 @@ export async function processPendingLaunches(now = new Date()): Promise<number> 
       await notifyTeam(product, copy, chosen.length, chosen.slice(0, 8).map((c) => ({ name: c.name, score: scores.get(c.id) ?? 0 })), settings, { id: campaign.id, sendAt });
       made += 1;
     } catch (error) {
+      if (unlinked) {
+        await CampaignRecipientModel.deleteMany({ campaignId: unlinked }).catch(() => {});
+        await CampaignModel.deleteOne({ _id: unlinked }).catch(() => {});
+      }
       const message = error instanceof Error ? error.message.split('\n')[0]! : String(error);
       const attempts = (launch.attempts ?? 0) + 1;
       await ProductLaunchModel.updateOne({ _id: launch._id }, { $set: { error: message, attempts, ...(attempts >= MAX_ATTEMPTS ? { status: 'failed' } : {}) } });

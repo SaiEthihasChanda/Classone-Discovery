@@ -5,7 +5,7 @@
  * feature gets consistent error messages instead of each fetch call inventing
  * its own handling.
  */
-import type {
+import type { MailboxImport,
   AudiencePreview,
   Campaign,
   CampaignAudience,
@@ -317,6 +317,9 @@ export const api = {
     request<AppSettings>(`/settings/targets/${targetId}`, { method: 'DELETE' }),
 
   resetSettings: () => request<AppSettings>('/settings/reset', { method: 'POST' }),
+  mailboxImport: () => request<{ import: MailboxImport | null }>('/settings/mailbox-import'),
+  startMailboxImport: (from: string, to: string) =>
+    request<{ import: MailboxImport }>('/settings/mailbox-import', { method: 'POST', body: JSON.stringify({ from, to }) }),
 
   crmStats: () => request<CrmStats>('/admin/crm-stats'),
 

@@ -9,7 +9,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
 import { EmptyState, ErrorBanner, Loading, formatDate, relativeTime } from '../../components/common';
-import { Icon } from '../../components/ui';
+import { Icon, Segmented } from '../../components/ui';
 import { AnimatePresence, cardMotion, motion } from '../../components/motion';
 import type { CampaignListItem, CampaignStatus } from '../../types';
 import { CampaignBuilder } from './CampaignBuilder';
@@ -223,13 +223,17 @@ function NewProducts({ onOpen }: { onOpen: (id: string) => void }) {
           </p>
         </div>
         <div className="np-controls">
-          <div className="segmented" role="radiogroup" title="Auto: sends 24 h after it is prepared unless paused. Manual: waits as a draft.">
-            {(['manual', 'auto'] as const).map((m) => (
-              <button key={m} role="radio" aria-checked={s.mode === m} className={s.mode === m ? 'active' : ''} disabled={busy !== null || !can('sales')} onClick={() => s.mode !== m && void save({ mode: m })}>
-                {m === 'auto' ? 'Auto' : 'Manual'}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            label="New-product mode"
+            title="Auto: sends 24 h after it is prepared unless paused. Manual: waits as a draft."
+            items={[
+              { key: 'manual', label: 'Manual' },
+              { key: 'auto', label: 'Auto' },
+            ]}
+            value={s.mode}
+            disabled={busy !== null || !can('sales')}
+            onChange={(m) => void save({ mode: m })}
+          />
           {can('sales') && (
             <button className="btn btn-sm" disabled={busy !== null} onClick={() => void checkNow()}>
               {busy === 'check' ? 'Checking…' : 'Check the website now'}

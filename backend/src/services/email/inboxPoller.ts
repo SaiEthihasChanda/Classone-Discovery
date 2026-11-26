@@ -18,6 +18,8 @@
  * retried on later polls, up to MAX_ATTEMPTS. Needs gmail.readonly at least
  * (gmail.modify to also mark mail read in Gmail) — run `npm run gmail:auth`.
  */
+import { getState, setState } from '../../models/systemState.model.js';
+import { ApiError } from '../../middleware/errorHandler.js';
 import { google, type gmail_v1 } from 'googleapis';
 import { env } from '../../config/env.js';
 import { InboundEmailModel } from '../../models/inboundEmail.model.js';
@@ -56,6 +58,8 @@ export interface RawMail {
   attachments?: Array<{ filename: string; mimeType?: string; size?: number }>;
   /** Our own note to the team (X-ClassOne-Notice header): never a conversation. */
   internal?: boolean;
+  /** Sent by this app (X-ClassOne-App): the app records it on its thread itself. */
+  fromApp?: boolean;
 }
 
 /** Where mail comes from — Gmail in the app, a fake in tests. */
@@ -64,6 +68,8 @@ export interface InboxSource {
   listRecentIds(): Promise<string[]>;
   /** Mail sent from the mailbox, newest first — optional (tests may leave it out). */
   listSentIds?(): Promise<string[]>;
+  /** Mail in a dated window (catch-up and history import), all pages up to `cap`. Optional. */
+  listIdsBetween?(folder: 'inbox' | 'sent', after: Date, before: Date | undefined, cap: number): Promise<string[]>;
   get(id: string): Promise<RawMail | null>;
   /** Marks messages read in the mailbox itself. Optional; best effort. */
   markRead?(ids: string[]): Promise<void>;
@@ -121,17 +127,33 @@ function parseFrom(header: string): { from: string; fromName?: string } {
   return { from: header.trim().toLowerCase() };
 }
 
+/** Primary tab only: service notifications, newsletters and promotions are not sales conversations. */
+const INBOX_FILTER = '-category:promotions -category:social -category:updates -category:forums';
+
 export function gmailInboxSource(): InboxSource {
   const gmail = google.gmail({ version: 'v1', auth: oauthClient() });
   return {
     async listRecentIds() {
       // Primary tab only: service notifications, newsletters and promotions are not sales conversations.
-      const res = await gmail.users.messages.list({ userId: 'me', q: 'in:inbox -from:me newer_than:2d -category:promotions -category:social -category:updates -category:forums', maxResults: 50 });
+      const res = await gmail.users.messages.list({ userId: 'me', q: `in:inbox -from:me newer_than:2d ${INBOX_FILTER}`, maxResults: 50 });
       return (res.data.messages ?? []).map((m) => m.id!).filter(Boolean);
     },
     async listSentIds() {
       const res = await gmail.users.messages.list({ userId: 'me', q: 'in:sent newer_than:2d', maxResults: 50 });
       return (res.data.messages ?? []).map((m) => m.id!).filter(Boolean);
+    },
+    async listIdsBetween(folder, after, before, cap) {
+      const sec = (d: Date) => Math.floor(d.getTime() / 1000);
+      const range = `after:${sec(after)}${before ? ` before:${sec(before)}` : ''}`;
+      const q = folder === 'inbox' ? `in:inbox -from:me ${INBOX_FILTER} ${range}` : `in:sent ${range}`;
+      const ids: string[] = [];
+      let pageToken: string | undefined;
+      do {
+        const res = await gmail.users.messages.list({ userId: 'me', q, maxResults: 500, pageToken });
+        ids.push(...(res.data.messages ?? []).map((m) => m.id!).filter(Boolean));
+        pageToken = res.data.nextPageToken ?? undefined;
+      } while (pageToken && ids.length < cap);
+      return ids.slice(0, cap);
     },
     async markRead(ids) {
       if (!ids.length) return;
@@ -159,6 +181,7 @@ export function gmailInboxSource(): InboxSource {
         toName,
         attachments: attachmentsOf(msg.payload),
         internal: headers.has('x-classone-notice'),
+        fromApp: headers.has('x-classone-app'),
         automatic: /auto-(replied|generated)/i.test(headers.get('auto-submitted') ?? '') || /^(bulk|list|junk)$/i.test(headers.get('precedence') ?? ''),
         bulk:
           (msg.labelIds ?? []).some((l) => /^CATEGORY_(PROMOTIONS|UPDATES|SOCIAL|FORUMS)$/.test(l)) ||
@@ -231,6 +254,24 @@ async function newThread(email: string, name: string | undefined, lead: Lead | n
   });
 }
 
+/**
+ * They wrote to us (a reply or a fresh email): nothing should still be chasing them. Their other
+ * open outreach threads stop following up, and follow-up drafts waiting there are dropped.
+ */
+async function stopOtherFollowUps(threadId: string, email: string, leadId: string | undefined, now: Date): Promise<void> {
+  const who = [{ contactEmail: email }, { leadEmailSnapshot: email }, ...(leadId ? [{ leadId }] : [])];
+  const unsetDraft = Object.fromEntries(DRAFT_FIELDS.map((f) => [f, '']));
+  const replied = { 'followUp.replyDetected': true, 'followUp.replyDetectedAt': now, 'followUp.replyDetectionMethod': 'gmail' };
+  await EmailThreadModel.updateMany(
+    { _id: { $ne: threadId }, $or: who, status: 'open' },
+    { $set: { status: 'replied', ...replied }, $unset: { 'followUp.nextCheckAt': '' } },
+  );
+  await EmailThreadModel.updateMany(
+    { _id: { $ne: threadId }, $or: who, status: 'draft', draftType: { $regex: '^follow_up' } },
+    { $set: { status: 'replied', ...replied }, $unset: { ...unsetDraft, 'followUp.nextCheckAt': '' } },
+  );
+}
+
 const ACTION_LABEL = {
   reply: 'Reply drafted — ready in Conversations',
   none: 'No reply needed',
@@ -239,7 +280,7 @@ const ACTION_LABEL = {
 } as const;
 
 /** Handles one incoming mail end to end. Throws on failure (the caller records it for a retry). */
-export async function processMail(mail: RawMail): Promise<void> {
+export async function processMail(mail: RawMail, opts: { history?: boolean } = {}): Promise<void> {
   const ours = mail.from === env.EMAIL_FROM_ADDRESS.toLowerCase();
   if (ours || mail.internal || NO_REPLY.test(mail.from) || BOUNCE.test(mail.from) || mail.bulk) {
     if (BOUNCE.test(mail.from) && mail.gmailThreadId) {
@@ -263,6 +304,8 @@ export async function processMail(mail: RawMail): Promise<void> {
     if (!thread) matchedBy = lead ? 'email' : 'contact';
   }
 
+  if (opts.history) return importOldMail(mail, thread, lead, matchedBy);
+
   // 2. What it says (also gives the contact details read from the signature).
   const catalog = await repositories.products.findActive();
   const triage = await triageInbound(mail, lead, thread, catalog);
@@ -282,6 +325,7 @@ export async function processMail(mail: RawMail): Promise<void> {
     ...(triage.intent === 'unsubscribe' ? { doNotContact: true } : {}),
   });
 
+  const freshThread = !thread;
   if (!thread) thread = await newThread(mail.from, name, lead, mail, 'replied');
   else if (lead && !thread.leadId) await repositories.threads.updateById(thread.id, { leadId: lead.id });
 
@@ -311,8 +355,13 @@ export async function processMail(mail: RawMail): Promise<void> {
   let action: keyof typeof ACTION_LABEL;
   if (triage.intent === 'out_of_office' || mail.automatic) {
     // Not a real reply: keep following up, but only after they're back.
+    // A closed or answered conversation stays as it is: an auto-responder must not restart follow-ups.
     const back = triage.outOfOfficeUntil ?? new Date(now.getTime() + 7 * 86_400_000);
-    await repositories.threads.updateById(thread.id, { ...base, ...(thread.status === 'draft' ? {} : { status: 'open' }), followUp: { nextCheckAt: new Date(back.getTime() + 86_400_000) } });
+    if (freshThread || thread.status === 'open' || thread.status === 'draft') {
+      await repositories.threads.updateById(thread.id, { ...base, ...(thread.status === 'draft' ? {} : { status: 'open' }), followUp: { nextCheckAt: new Date(back.getTime() + 86_400_000) } });
+    } else {
+      await repositories.threads.updateById(thread.id, base);
+    }
     action = 'ooo';
   } else if (triage.intent === 'unsubscribe') {
     await repositories.threads.updateById(thread.id, { ...base, status: 'closed', closedReason: 'replied', followUp: { replyDetected: true, replyDetectedAt: now, replyDetectionMethod: 'gmail' } }, { unset: DRAFT_FIELDS });
@@ -341,6 +390,8 @@ export async function processMail(mail: RawMail): Promise<void> {
     if (lead) await repositories.leads.updateById(lead.id, { followUpStatusSummary: 'in_progress', activeThreadId: thread.id });
   }
 
+  if (!mail.automatic && triage.intent !== 'out_of_office') await stopOtherFollowUps(thread.id, mail.from, lead?.id, now);
+
   await logActivity({
     type: 'reply_detected',
     message: `${name ?? mail.from} wrote: ${triage.summary} (${triage.intent.replace(/_/g, ' ')})${matchedBy === 'new_lead' ? ' — new lead created' : ''}`,
@@ -360,23 +411,52 @@ export async function processMail(mail: RawMail): Promise<void> {
 }
 
 /**
+ * History import: an old mail goes on the person's conversation as already read — no AI, no draft,
+ * no "waiting for us" clock, no follow-up changes. Someone unknown becomes a contact (never a lead:
+ * deciding that needs the AI), so their conversation still shows.
+ */
+async function importOldMail(mail: RawMail, thread: EmailThread | null, lead: Lead | null, matchedBy: string): Promise<void> {
+  const name = lead?.person.name ?? mail.fromName;
+  await touchContact(mail.from, { name, leadId: lead?.id, lastMessageAt: mail.receivedAt });
+  const t = thread ?? (await newThread(mail.from, name, lead, mail, 'replied'));
+  await repositories.threads.appendMessage(t.id, {
+    messageId: mail.gmailId,
+    direction: 'inbound',
+    type: 'reply',
+    subject: mail.subject || '(no subject)',
+    bodyText: mail.bodyText || '(empty)',
+    sentAt: mail.receivedAt,
+    rfcMessageId: mail.rfcMessageId,
+    fromAddress: mail.from,
+    attachments: mail.attachments?.length ? mail.attachments : undefined,
+    readAt: mail.receivedAt,
+  });
+  await InboundEmailModel.updateOne(
+    { gmailId: mail.gmailId },
+    { $set: { ...mailFields(mail), direction: 'inbound', leadId: lead?.id, threadId: t.id, matchedBy, action: 'Imported from history (no AI)', status: 'processed' }, $unset: { error: '' } },
+    { upsert: true },
+  );
+}
+
+/**
  * A mail sent from the mailbox outside the app (written in Gmail itself): put it on the person's
  * conversation as ours, so Conversations shows both sides. Answering them that way also clears any
  * reply draft that was waiting. No AI involved.
  */
-export async function processSentMail(mail: RawMail): Promise<void> {
+export async function processSentMail(mail: RawMail, opts: { history?: boolean } = {}): Promise<void> {
   const to = mail.to?.toLowerCase();
   const record = (patch: Record<string, unknown>) =>
     InboundEmailModel.updateOne({ gmailId: mail.gmailId }, { $set: { ...mailFields(mail), from: to ?? 'unknown', direction: 'outbound', ...patch }, $unset: { error: '' } }, { upsert: true });
 
   // Sent through the app: already on its thread.
-  if (await EmailThreadModel.exists({ 'messages.messageId': mail.gmailId })) return void (await record({ status: 'ignored', action: 'Sent from the app' }));
+  // The header covers the moment between Gmail accepting a send and the app appending it to the thread.
+  if (mail.fromApp || (await EmailThreadModel.exists({ 'messages.messageId': mail.gmailId }))) return void (await record({ status: 'ignored', action: 'Sent from the app' }));
   if (mail.internal) return void (await record({ status: 'ignored', action: 'Team notification' }));
   if (!to || to === env.EMAIL_FROM_ADDRESS.toLowerCase()) return void (await record({ status: 'ignored', action: 'No outside recipient' }));
 
   let thread = await findThread(mail.gmailThreadId, to);
   const lead = thread?.leadId ? await repositories.leads.findById(thread.leadId) : await findLeadByEmail(to);
-  if (!thread) thread = await newThread(to, mail.toName, lead, mail, 'open');
+  if (!thread) thread = await newThread(to, mail.toName, lead, mail, opts.history ? 'replied' : 'open');
 
   await repositories.threads.appendMessage(thread.id, {
     messageId: mail.gmailId,
@@ -390,6 +470,11 @@ export async function processSentMail(mail: RawMail): Promise<void> {
     sentBy: 'gmail',
     attachments: mail.attachments?.length ? mail.attachments : undefined,
   });
+  if (opts.history) {
+    // An old message of ours: on the record, but it changes nothing about where the conversation stands now.
+    await touchContact(to, { name: lead?.person.name ?? mail.toName, leadId: lead?.id, lastMessageAt: mail.receivedAt });
+    return void (await record({ status: 'processed', leadId: lead?.id, threadId: thread.id, matchedBy: 'sent', action: 'Imported from history' }));
+  }
   await repositories.threads.updateById(
     thread.id,
     {
@@ -418,14 +503,28 @@ function mailFields(mail: RawMail) {
 }
 
 /** One poll: new mail both ways, plus earlier failures still worth retrying. Returns how many were handled. */
-export async function pollInbox(source: InboxSource): Promise<{ processed: number; failed: number }> {
-  const incoming = await source.listRecentIds();
-  const sent = source.listSentIds ? await source.listSentIds() : [];
+export async function pollInbox(source: InboxSource, window?: { after: Date; before?: Date }): Promise<{ processed: number; failed: number }> {
+  const byWindow = window && source.listIdsBetween;
+  const incoming = byWindow ? await source.listIdsBetween!('inbox', window.after, window.before, WINDOW_CAP) : await source.listRecentIds();
+  const sent = byWindow ? await source.listIdsBetween!('sent', window.after, window.before, WINDOW_CAP) : source.listSentIds ? await source.listSentIds() : [];
+  return handleIds(source, incoming, sent, { retry: true });
+}
+
+/** Cap per folder for a dated window (catch-up), so one call never pages through a whole mailbox. */
+const WINDOW_CAP = 2000;
+
+/**
+ * Handles the given mail ids that are not recorded yet (plus, when `retry`, earlier failures still worth
+ * another try), oldest first. Shared by the poll, the start-up catch-up and the history import.
+ */
+async function handleIds(source: InboxSource, incoming: string[], sent: string[], opts: { retry?: boolean; history?: boolean }): Promise<{ processed: number; failed: number }> {
   const all = [...incoming, ...sent];
+  // Anything already recorded is known — failed ones included, so a mail that keeps failing comes back
+  // only through the capped retry list below, never on every poll.
   const known = new Set(
-    ((await InboundEmailModel.find({ gmailId: { $in: all }, status: { $ne: 'failed' } }, { gmailId: 1 }).lean()) as Array<{ gmailId: string }>).map((d) => d.gmailId),
+    ((await InboundEmailModel.find({ gmailId: { $in: all } }, { gmailId: 1 }).lean()) as Array<{ gmailId: string }>).map((d) => d.gmailId),
   );
-  const retry = ((await InboundEmailModel.find({ status: 'failed', attempts: { $lt: MAX_ATTEMPTS } }, { gmailId: 1 }).lean()) as Array<{ gmailId: string }>).map((d) => d.gmailId);
+  const retry = opts.retry ? ((await InboundEmailModel.find({ status: 'failed', attempts: { $lt: MAX_ATTEMPTS } }, { gmailId: 1 }).lean()) as Array<{ gmailId: string }>).map((d) => d.gmailId) : [];
   const sentSet = new Set(sent);
   // Oldest first, so a conversation's mails are handled in the order they were written.
   const todo = [...new Set([...all.filter((id) => !known.has(id)), ...retry])];
@@ -453,8 +552,8 @@ export async function pollInbox(source: InboxSource): Promise<{ processed: numbe
   mails.sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime());
   for (const mail of mails) {
     try {
-      if (sentSet.has(mail.gmailId) || mail.from === env.EMAIL_FROM_ADDRESS.toLowerCase()) await processSentMail(mail);
-      else await processMail(mail);
+      if (sentSet.has(mail.gmailId) || mail.from === env.EMAIL_FROM_ADDRESS.toLowerCase()) await processSentMail(mail, { history: opts.history });
+      else await processMail(mail, { history: opts.history });
       processed += 1;
     } catch (error) {
       await fail(mail.gmailId, error, mail);
@@ -484,6 +583,99 @@ export function setActiveInboxSource(source: InboxSource | null): void {
 
 let timer: NodeJS.Timeout | null = null;
 let polling = false;
+
+/** Runs `fn` when no poll or import step is running, so the same mail is never handled twice at once. */
+async function exclusive<T>(fn: () => Promise<T>): Promise<T> {
+  while (polling) await new Promise((r) => setTimeout(r, 500));
+  polling = true;
+  try {
+    return await fn();
+  } finally {
+    polling = false;
+  }
+}
+
+const DAY = 86_400_000;
+/** How far back the start-up catch-up reads at most. */
+const CATCH_UP_DAYS = 30;
+
+/**
+ * After downtime: the window the poll's 2-day view would miss — from just before the newest mail already
+ * handled, at most 30 days back. Null when nothing was missed (or nothing was ever read).
+ */
+export function catchUpWindow(lastSeen: Date | null, now = new Date()): { after: Date } | null {
+  if (!lastSeen || now.getTime() - lastSeen.getTime() < 2 * DAY - 3_600_000) return null;
+  return { after: new Date(Math.max(lastSeen.getTime() - 3_600_000, now.getTime() - CATCH_UP_DAYS * DAY)) };
+}
+
+async function catchUp(source: InboxSource): Promise<void> {
+  const last = (await InboundEmailModel.findOne({}, { receivedAt: 1 }).sort({ receivedAt: -1 }).lean()) as { receivedAt?: Date } | null;
+  const window = catchUpWindow(last?.receivedAt ? new Date(last.receivedAt) : null);
+  if (!window || !source.listIdsBetween) return;
+  console.log(`[inbox] catching up on mail since ${window.after.toISOString().slice(0, 10)}`);
+  const r = await pollInbox(source, window);
+  console.log(`[inbox] catch-up: ${r.processed} mail(s) handled${r.failed ? `, ${r.failed} failed (will retry)` : ''}`);
+}
+
+// --- History import --------------------------------------------------------------------------------
+
+export interface HistoryImport {
+  status: 'running' | 'done' | 'failed';
+  from: string;
+  to: string;
+  found: number;
+  handled: number;
+  failed: number;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+}
+const IMPORT_KEY = 'inboxHistoryImport';
+const IMPORT_CAP = 5000;
+const IMPORT_CHUNK = 40;
+
+export async function historyImportStatus(): Promise<HistoryImport | null> {
+  return (await getState<HistoryImport>(IMPORT_KEY)) ?? null;
+}
+
+/**
+ * Imports older mail (both folders) between two dates onto people's conversations — no AI, read, nothing
+ * drafted or scheduled. Runs in the background in small steps between polls; progress is kept in system
+ * state for the Admin page.
+ */
+export async function startHistoryImport(from: Date, to: Date, source: InboxSource | null = activeSource): Promise<HistoryImport> {
+  if (!source?.listIdsBetween) throw new ApiError(409, 'The mailbox is not being read right now — check the Gmail connection.');
+  const current = await historyImportStatus();
+  if (current?.status === 'running') throw new ApiError(409, 'An import is already running.');
+  const state: HistoryImport = { status: 'running', from: from.toISOString(), to: to.toISOString(), found: 0, handled: 0, failed: 0, startedAt: new Date().toISOString() };
+  await setState(IMPORT_KEY, state);
+  const run = async () => {
+    try {
+      const inbox = await source.listIdsBetween!('inbox', from, to, IMPORT_CAP);
+      const sent = await source.listIdsBetween!('sent', from, to, IMPORT_CAP);
+      state.found = inbox.length + sent.length;
+      await setState(IMPORT_KEY, { ...state });
+      const sentSet = new Set(sent);
+      const ids = [...inbox, ...sent];
+      for (let i = 0; i < ids.length; i += IMPORT_CHUNK) {
+        const chunk = ids.slice(i, i + IMPORT_CHUNK);
+        const r = await exclusive(() => handleIds(source, chunk.filter((id) => !sentSet.has(id)), chunk.filter((id) => sentSet.has(id)), { history: true }));
+        state.handled += chunk.length - r.failed;
+        state.failed += r.failed;
+        await setState(IMPORT_KEY, { ...state });
+      }
+      state.status = 'done';
+    } catch (error) {
+      state.status = 'failed';
+      state.error = error instanceof Error ? error.message.split('\n')[0] : String(error);
+    }
+    state.finishedAt = new Date().toISOString();
+    await setState(IMPORT_KEY, { ...state });
+    console.log(`[inbox] history import ${state.status}: ${state.handled} of ${state.found} handled${state.failed ? `, ${state.failed} failed` : ''}`);
+  };
+  void run();
+  return state;
+}
 /** How inbox reading is doing — for the dashboard's alerts. */
 const inboxHealth: { running: boolean; lastOkAt?: Date; lastError?: string; stoppedReason?: string } = { running: false };
 export function inboxStatus() {
@@ -501,10 +693,19 @@ export function startInboxPoller(): void {
   }
   activeSource = source;
   inboxHealth.running = true;
+  // An import that was running when the server stopped will never finish: say so, and free the slot.
+  void historyImportStatus().then((s) => {
+    if (s?.status === 'running') void setState(IMPORT_KEY, { ...s, status: 'failed', error: 'Stopped when the server restarted — start it again; mail already imported is kept.', finishedAt: new Date().toISOString() });
+  });
+  let caughtUp = false;
   const tick = async () => {
     if (polling) return;
     polling = true;
     try {
+      if (!caughtUp) {
+        caughtUp = true;
+        await catchUp(source);
+      }
       const r = await pollInbox(source);
       inboxHealth.lastOkAt = new Date();
       delete inboxHealth.lastError;

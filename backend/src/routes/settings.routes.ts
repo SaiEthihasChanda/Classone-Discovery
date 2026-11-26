@@ -240,3 +240,27 @@ settingsRouter.post(
     res.json(await resetSettings());
   }),
 );
+
+/**
+ * Mailbox history: import older mail onto people's conversations (no AI, nothing drafted or sent).
+ * GET is open to every signed-in user; starting one is admin-only (any non-GET under /settings).
+ */
+settingsRouter.get(
+  '/mailbox-import',
+  asyncHandler(async (_req, res) => {
+    const { historyImportStatus } = await import('../services/email/inboxPoller.js');
+    res.json({ import: await historyImportStatus() });
+  }),
+);
+
+settingsRouter.post(
+  '/mailbox-import',
+  asyncHandler(async (req, res) => {
+    const body = z.object({ from: z.coerce.date(), to: z.coerce.date() }).parse(req.body ?? {});
+    const to = new Date(Math.min(body.to.getTime() + 86_400_000, Date.now())); // the end day counts in full
+    if (body.from >= to) throw new ApiError(400, 'The start date must be before the end date.');
+    if (to.getTime() - body.from.getTime() > 366 * 86_400_000) throw new ApiError(400, 'Import at most a year at a time.');
+    const { startHistoryImport } = await import('../services/email/inboxPoller.js');
+    res.status(202).json({ import: await startHistoryImport(body.from, to) });
+  }),
+);

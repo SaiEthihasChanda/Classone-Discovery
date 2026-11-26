@@ -627,3 +627,16 @@ export interface RosterRunLogLine {
   level: 'info' | 'warn' | 'error';
   message: string;
 }
+
+/** An import of older mailbox history (Admin → Settings → Mailbox). */
+export interface MailboxImport {
+  status: 'running' | 'done' | 'failed';
+  from: string;
+  to: string;
+  found: number;
+  handled: number;
+  failed: number;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+}

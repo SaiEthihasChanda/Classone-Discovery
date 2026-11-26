@@ -166,6 +166,19 @@ export interface SendOnThreadInput {
  * conversation — records it, and re-arms the follow-up timer. Every send goes through here:
  * approved drafts, replies typed in Conversations, campaign mails.
  */
+/**
+ * The first send of a conversation created just for it. If the send fails, the still-empty thread is
+ * removed, so a failed send never leaves a blank conversation behind.
+ */
+export async function sendOnNewThread(thread: EmailThread, input: SendOnThreadInput): Promise<EmailThread> {
+  try {
+    return await sendOnThread(thread, input);
+  } catch (error) {
+    await repositories.threads.deleteEmpty(thread.id).catch(() => {});
+    throw error;
+  }
+}
+
 export async function sendOnThread(thread: EmailThread, input: SendOnThreadInput): Promise<EmailThread> {
   const transport = getEmailTransport();
   const headerIds = thread.messages.map((m) => m.rfcMessageId).filter((id): id is string => Boolean(id));

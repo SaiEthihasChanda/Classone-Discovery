@@ -22,7 +22,7 @@ import { normalizeInstitutionKey, normalizeNameKey } from '../../utils/normalize
 import { triageInbound } from './inboundTriage.js';
 import { markReadInMailbox } from './inboxPoller.js';
 import { draftOutreachEmail } from './outreachDraftService.js';
-import { recipientOf, sendOnThread } from './outreachService.js';
+import { recipientOf, sendOnNewThread, sendOnThread } from './outreachService.js';
 
 export type PeopleFilter = 'all' | 'needs_reply' | 'overdue' | 'unread' | 'drafts' | 'leads' | 'new';
 
@@ -245,7 +245,7 @@ export async function composeMessage(input: { to: string; subject: string; body:
     followUp: { attemptsSent: 0, maxAttempts: 2, replyDetected: false },
   });
   await touchContact(to, { leadId: lead?.id });
-  return sendOnThread(thread, { to, subject: input.subject.trim(), body: input.body.trim(), type: 'manual', draftedBy: 'human', sentBy: input.sentBy });
+  return sendOnNewThread(thread, { to, subject: input.subject.trim(), body: input.body.trim(), type: 'manual', draftedBy: 'human', sentBy: input.sentBy });
 }
 
 /**

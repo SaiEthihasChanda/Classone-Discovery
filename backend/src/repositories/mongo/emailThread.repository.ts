@@ -25,6 +25,12 @@ export class MongoEmailThreadRepository extends MongoRepository<
     });
   }
 
+  /** Deletes a thread only while it still has no messages (a conversation whose first send failed). */
+  async deleteEmpty(threadId: string): Promise<boolean> {
+    const r = await EmailThreadModel.deleteOne({ _id: threadId, 'messages.0': { $exists: false } }).exec();
+    return r.deletedCount === 1;
+  }
+
   /** A lead's currently-open thread, if any. */
   async findOpenThreadForLead(leadId: string): Promise<EmailThread | null> {
     return this.findOne([where.eq('leadId', leadId), where.eq('status', 'open')]);
@@ -42,18 +48,22 @@ export class MongoEmailThreadRepository extends MongoRepository<
    *
    * `$push` rather than read-modify-write, so two concurrent appends cannot
    * clobber each other. Firestore's `arrayUnion` is the direct equivalent.
+   * Idempotent by messageId: a retried step (e.g. an inbound mail processed
+   * again after a later step failed) never records the same message twice.
+   * Kept sorted by sentAt, so older mail imported later still lands in order.
    */
   async appendMessage(
     threadId: string,
     message: EmailThread['messages'][number],
   ): Promise<EmailThread | null> {
-    const doc = await EmailThreadModel.findByIdAndUpdate(
-      threadId,
-      { $push: { messages: message } },
-      { new: true },
-    )
-      .lean()
-      .exec();
+    const doc =
+      (await EmailThreadModel.findOneAndUpdate(
+        { _id: threadId, 'messages.messageId': { $ne: message.messageId } },
+        { $push: { messages: { $each: [message], $sort: { sentAt: 1 } } } },
+        { new: true },
+      )
+        .lean()
+        .exec()) ?? (await EmailThreadModel.findById(threadId).lean().exec());
     return this.toDomain(doc as Record<string, any> | null);
   }
 }

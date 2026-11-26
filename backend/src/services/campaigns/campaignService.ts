@@ -22,7 +22,8 @@ import { LeadModel } from '../../models/lead.model.js';
 import { repositories } from '../../repositories/index.js';
 import type { Product } from '../../types/domain.js';
 import { geminiGenerate, geminiModels } from '../ai/geminiProvider.js';
-import { sendOnThread } from '../email/outreachService.js';
+import { sendOnNewThread } from '../email/outreachService.js';
+import { inSendWindow } from '../../utils/sendWindow.js';
 import { getEmailTransport } from '../email/transports/index.js';
 import { listUnsubscribeHeader, renderCampaign, type Asset, type Recipient } from './campaignRender.js';
 
@@ -294,7 +295,10 @@ export async function campaignTick(now = new Date()): Promise<'sent' | 'capped' 
   if (!sending.length) return 'idle';
   if ((await sentToday(now)) >= env.CAMPAIGN_DAILY_CAP) return 'capped';
 
+  const windowOpen = inSendWindow(now);
   for (const c of sending) {
+    // New-product announcements go out only Mon–Sat 09:00–18:00 IST; outside it they wait for the next opening.
+    if (c.kind === 'product_launch' && !windowOpen) continue;
     if (c.lastSentAt && now.getTime() - new Date(c.lastSentAt).getTime() < c.paceSeconds * 1000) continue;
     // Claim one recipient atomically, so two ticks never send the same email.
     const r = await CampaignRecipientModel.findOneAndUpdate({ campaignId: c.id, status: 'queued' }, { $set: { status: 'sent', sentAt: now } }, { sort: { _id: 1 }, new: true }).lean();
@@ -336,7 +340,7 @@ async function sendOne(c: CampaignDoc, r: { _id: unknown; leadId?: string; email
     messages: [],
     followUp: { attemptsSent: 0, maxAttempts: 0, replyDetected: false },
   });
-  await sendOnThread(thread, {
+  await sendOnNewThread(thread, {
     to: r.email,
     subject: out.subject,
     body: out.text,

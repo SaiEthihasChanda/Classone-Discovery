@@ -35,7 +35,7 @@ async function buildRawMessage(message: EmailMessage, messageId: string): Promis
     html: message.html,
     inReplyTo: message.inReplyToMessageId,
     attachments: message.attachments,
-    headers: { ...(message.listUnsubscribe ? { 'List-Unsubscribe': message.listUnsubscribe } : {}), ...(message.internal ? { 'X-ClassOne-Notice': 'internal' } : {}) },
+    headers: { 'X-ClassOne-App': '1', ...(message.listUnsubscribe ? { 'List-Unsubscribe': message.listUnsubscribe } : {}), ...(message.internal ? { 'X-ClassOne-Notice': 'internal' } : {}) },
     references: message.references?.join(' '),
   });
   const built = (await mail.compile().build()) as Buffer;

@@ -42,10 +42,12 @@ const messageSchema = new Schema(
 const emailThreadSchema = new Schema(
   {
     leadId: { type: String, index: true },
-    contactEmail: { type: String, index: true },
+    // Stored lowercase (and matched lowercase: Mongoose applies it to query filters too), so a
+    // lead whose address has capitals still finds their conversations.
+    contactEmail: { type: String, index: true, lowercase: true, trim: true },
     contactName: String,
     // Snapshot so history stays truthful if the lead's email is edited later.
-    leadEmailSnapshot: { type: String, required: true },
+    leadEmailSnapshot: { type: String, required: true, lowercase: true, trim: true },
 
     subjectLine: { type: String, required: true },
     status: {

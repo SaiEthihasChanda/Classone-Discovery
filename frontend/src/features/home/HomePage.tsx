@@ -10,6 +10,8 @@ import { api } from '../../api/client';
 import { useAsync } from '../../hooks/useAsync';
 import { useAuth } from '../../auth/AuthProvider';
 import { ErrorBanner, Loading, relativeTime } from '../../components/common';
+import { CountUp } from '../../components/motion';
+import { Segmented } from '../../components/ui';
 import { JobPanel } from '../../components/pickers';
 import type { DashboardData, DashboardRange } from '../../types';
 
@@ -62,13 +64,7 @@ export function HomePage() {
           </p>
         </div>
         <div className="dash-controls">
-          <div className="segmented" role="radiogroup" aria-label="Period">
-            {RANGES.map((r) => (
-              <button key={r.value} role="radio" aria-checked={range === r.value} className={range === r.value ? 'active' : ''} onClick={() => setRange(r.value)}>
-                {r.label}
-              </button>
-            ))}
-          </div>
+          <Segmented label="Period" items={RANGES.map((r) => ({ key: r.value, label: r.label }))} value={range} onChange={setRange} />
           <button className="btn btn-sm btn-ghost" onClick={reload} disabled={loading}>
             Refresh
           </button>
@@ -149,7 +145,7 @@ function Tiles({ d, range }: { d: DashboardData; range: DashboardRange }) {
   const h = d.headline;
   const prevLabel = range === 'all' ? '' : `the ${range} days before`;
   const tiles: Array<{ label: string; value: string; sub?: React.ReactNode; to?: string; warn?: boolean }> = [
-    { label: 'People in the CRM', value: String(h.inCrm.value), sub: <span className="tile-delta">{h.inCrm.delta} approved {range === 'all' ? 'in all' : 'this period'}</span>, to: '/leads' },
+    { label: 'People in the CRM', value: String(h.inCrm.value), sub: <span className="tile-delta">{h.inCrm.delta} approved {range === 'all' ? 'in all' : `in the last ${range} days`}</span>, to: '/leads' },
     { label: 'Awaiting approval', value: String(h.awaitingApproval.value), to: '/leads?status=pending_review' },
     { label: 'Discoveries in progress', value: String(h.discoveriesInProgress.value), sub: <span className="tile-delta">People moving through Prospects</span>, to: '/prospects' },
     { label: 'Open conversations', value: String(h.openConversations.value), to: '/conversations' },
@@ -171,7 +167,9 @@ function Tiles({ d, range }: { d: DashboardData; range: DashboardRange }) {
         const body = (
           <>
             <span className="tile-label">{t.label}</span>
-            <span className={`tile-value${t.warn ? ' warn' : ''}`}>{t.value}</span>
+            <span className={`tile-value${t.warn ? ' warn' : ''}`}>
+              <CountUp text={t.value} />
+            </span>
             {t.sub}
           </>
         );
@@ -217,7 +215,7 @@ function Funnel({ funnel }: { funnel: DashboardData['funnel'] }) {
   return (
     <section className="card card-pad">
       <h2 className="section-title">From found to replied</h2>
-      <p className="muted small dash-sub">People who reached each step in this period.</p>
+      <p className="muted small dash-sub">People first found in this period, and how far they have got. Approvals of people found earlier are not counted here.</p>
       <div className="funnel">
         {funnel.map((s, i) => {
           const prev = i > 0 ? funnel[i - 1].count : null;
@@ -226,9 +224,11 @@ function Funnel({ funnel }: { funnel: DashboardData['funnel'] }) {
             <div key={s.key} className="funnel-row" title={`${s.label}: ${s.count}${conv != null ? ` (${conv}% of the step before)` : ''}`}>
               <span className="funnel-label">{s.label}</span>
               <span className="funnel-track">
-                <span className="funnel-bar" style={{ width: `${Math.max(s.count ? 1.5 : 0, (s.count / max) * 100)}%` }} />
+                <span className="funnel-bar" style={{ width: `${Math.max(s.count ? 1.5 : 0, (s.count / max) * 100)}%`, animationDelay: `${120 + i * 70}ms` }} />
               </span>
-              <span className="funnel-count">{s.count.toLocaleString('en-IN')}</span>
+              <span className="funnel-count">
+                <CountUp text={String(s.count)} />
+              </span>
               <span className="funnel-conv">{conv != null ? `${conv}%` : ''}</span>
             </div>
           );
@@ -348,7 +348,8 @@ function Trend({ trends }: { trends: DashboardData['trends'] }) {
               let acc = 0;
               const segs = SERIES.filter((s) => x[s.key] > 0);
               return (
-                <g key={x.start} opacity={hover == null || hover === i ? 1 : 0.45}>
+                <g key={x.start} className="bar-dim" opacity={hover == null || hover === i ? 1 : 0.45}>
+                  <g className="bar-grow" style={{ animationDelay: `${80 + i * 45}ms` }}>
                   {segs.map((s, si) => {
                     const v = x[s.key];
                     const top = y(acc + v);
@@ -362,6 +363,7 @@ function Trend({ trends }: { trends: DashboardData['trends'] }) {
                       <rect key={s.key} x={cx(i) - barW / 2} y={top} width={barW} height={h} fill={s.color} />
                     );
                   })}
+                  </g>
                   {i % every === 0 && (
                     <text x={cx(i)} y={H - 8} className="tick" textAnchor="middle">
                       {bucketLabel(x.start, trends.bucketDays)}
@@ -370,9 +372,9 @@ function Trend({ trends }: { trends: DashboardData['trends'] }) {
                 </g>
               );
             })}
-            {b.length > 1 && <polyline points={b.map((x, i) => `${cx(i)},${y(x.replies)}`).join(' ')} fill="none" stroke={REPLIES_COLOR} strokeWidth={2} strokeLinejoin="round" />}
+            {b.length > 1 && <polyline className="line-draw" pathLength={1} points={b.map((x, i) => `${cx(i)},${y(x.replies)}`).join(' ')} fill="none" stroke={REPLIES_COLOR} strokeWidth={2} strokeLinejoin="round" />}
             {b.map((x, i) => (
-              <circle key={x.start} cx={cx(i)} cy={y(x.replies)} r={hover === i ? 5 : 4} fill={REPLIES_COLOR} stroke="#fff" strokeWidth={2} />
+              <circle key={x.start} className="dot-pop" style={{ animationDelay: `${500 + i * 45}ms` }} cx={cx(i)} cy={y(x.replies)} r={hover === i ? 5 : 4} fill={REPLIES_COLOR} stroke="#fff" strokeWidth={2} />
             ))}
             {b.map((x, i) => (
               <rect key={`hit-${x.start}`} x={pad.l + slot * i} y={pad.t} width={slot} height={ih} fill="transparent" onMouseEnter={() => setHover(i)} onFocus={() => setHover(i)} tabIndex={0} aria-label={`${bucketLabel(x.start, trends.bucketDays)}: ${total(x)} sent, ${x.replies} replies`} />

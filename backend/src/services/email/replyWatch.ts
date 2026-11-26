@@ -184,27 +184,40 @@ export async function autoReplyTick(now = new Date()): Promise<number> {
   if (!autoPeople.size) return 0;
   let sent = 0;
   for (const thread of await overdueThreads(now)) {
+    // One broken conversation must not stop the others: it is logged and tried again an hour later.
+    try {
+      if (await holdingReplyFor(thread, autoPeople, now)) sent += 1;
+    } catch (error) {
+      console.error(`[reply-watch] holding reply for thread ${thread.id} failed:`, error instanceof Error ? error.message : error);
+      await EmailThreadModel.updateOne({ _id: thread.id }, { $set: { autoReplyDueAt: new Date(now.getTime() + HOUR) } }).catch(() => {});
+    }
+  }
+  return sent;
+}
+
+/** Sends one holding reply if this conversation is due one. Returns whether it sent. */
+async function holdingReplyFor(thread: EmailThread, autoPeople: Set<string>, now: Date): Promise<boolean> {
+  {
     const { email, lead, contact } = await recipientOf(thread);
-    if (!email || !autoPeople.has(email.toLowerCase()) || contact.doNotContact) continue;
+    if (!email || !autoPeople.has(email.toLowerCase()) || contact.doNotContact) return false;
     // One holding reply per message of theirs.
-    if (thread.autoReplySentAt && thread.awaitingReplySince && new Date(thread.autoReplySentAt) >= new Date(thread.awaitingReplySince)) continue;
+    if (thread.autoReplySentAt && thread.awaitingReplySince && new Date(thread.autoReplySentAt) >= new Date(thread.awaitingReplySince)) return false;
     const lastIn = [...thread.messages].reverse().find((m) => m.direction === 'inbound');
-    if (!lastIn || NO_ANSWER.has(lastIn.intent ?? '')) continue;
+    if (!lastIn || NO_ANSWER.has(lastIn.intent ?? '')) return false;
 
     if (!thread.autoReplyDueAt) {
       await EmailThreadModel.updateOne({ _id: thread.id }, { $set: { autoReplyDueAt: new Date(now.getTime() + env.AUTO_REPLY_DELAY_HOURS * HOUR) } });
-      if (env.AUTO_REPLY_DELAY_HOURS > 0) continue;
-    } else if (new Date(thread.autoReplyDueAt) > now) continue;
+      if (env.AUTO_REPLY_DELAY_HOURS > 0) return false;
+    } else if (new Date(thread.autoReplyDueAt) > now) return false;
 
     const draftKept = await ensureDraft(thread);
     const { text, model } = await writeHoldingReply(contact.name, lastIn);
     const subject = /^re:/i.test(lastIn.subject) ? lastIn.subject : `Re: ${lastIn.subject || thread.subjectLine}`;
     const after = await sendOnThread(draftKept ?? thread, { to: email, subject, body: text, type: 'response', draftedBy: 'ai', aiDraftModel: model, sentBy: 'auto-reply', holding: true });
-    sent += 1;
     await logActivity({ type: 'email_sent', message: `Holding reply sent automatically to ${contact.name}`, relatedLeadId: lead?.id, relatedThreadId: thread.id, metadata: { auto: true } });
     await notifyHoldingReply(after, contact.name, email, lastIn, text).catch((e) => console.error('[reply-watch] could not notify the team:', e instanceof Error ? e.message : e));
+    return true;
   }
-  return sent;
 }
 
 // --- Team emails -------------------------------------------------------------------------------------
@@ -314,12 +327,18 @@ export function startReplyWatch(): void {
     if (busy) return;
     busy = true;
     try {
-      const n = await autoReplyTick();
-      if (n) console.log(`[reply-watch] ${n} holding repl${n === 1 ? 'y' : 'ies'} sent`);
-      const d = await digestTick();
-      if (d) console.log(`[reply-watch] overdue digest sent (${d} conversation${d === 1 ? '' : 's'})`);
-    } catch (error) {
-      console.error('[reply-watch] tick failed:', error instanceof Error ? error.message : error);
+      try {
+        const n = await autoReplyTick();
+        if (n) console.log(`[reply-watch] ${n} holding repl${n === 1 ? 'y' : 'ies'} sent`);
+      } catch (error) {
+        console.error('[reply-watch] holding replies failed:', error instanceof Error ? error.message : error);
+      }
+      try {
+        const d = await digestTick();
+        if (d) console.log(`[reply-watch] overdue digest sent (${d} conversation${d === 1 ? '' : 's'})`);
+      } catch (error) {
+        console.error('[reply-watch] digest failed:', error instanceof Error ? error.message : error);
+      }
     } finally {
       busy = false;
     }
