@@ -6,6 +6,8 @@ import { apiRouter } from './routes/index.js';
 
 export function createApp() {
   const app = express();
+  // Behind Caddy (deploy/): read the visitor's address from X-Forwarded-For set by the local proxy only.
+  app.set('trust proxy', 'loopback');
 
   app.use(
     cors({

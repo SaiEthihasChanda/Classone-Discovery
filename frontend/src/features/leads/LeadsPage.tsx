@@ -130,6 +130,7 @@ export function LeadsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [brands, setBrands] = useState<string[]>([]);
   const [minScore, setMinScore] = useState(0);
+  const newFunding = params.get('newFunding') === '1';
   const [sortBy, setSortBy] = useState<'createdAt' | 'score' | 'name'>('score');
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
@@ -155,6 +156,7 @@ export function LeadsPage() {
     status: status === 'all' ? undefined : status,
     brands: brands.length > 0 ? brands : undefined,
     minScore: minScore > 0 ? minScore : undefined,
+    newFunding: newFunding ? '1' : undefined,
     sortBy,
     sortDir: sortBy === 'name' ? 'asc' : 'desc',
   };
@@ -164,7 +166,7 @@ export function LeadsPage() {
   const productName = new Map((catalog?.items ?? []).flatMap((p) => [[p.productId, p.name] as const, [p.id, p.name] as const]));
   const { data, loading, error, reload } = useAsync(
     () => api.listLeads({ ...filters, limit: PAGE_SIZE, skip: page * PAGE_SIZE }),
-    [debouncedSearch, status, brands.join(','), minScore, sortBy, page],
+    [debouncedSearch, status, brands.join(','), minScore, newFunding, sortBy, page],
   );
   // Counts for the status tabs — one tiny request each.
   const { data: counts, reload: reloadCounts } = useAsync(async () => {
@@ -283,6 +285,9 @@ export function LeadsPage() {
           <option value={70}>Score 70+</option>
         </select>
         <BrandFilter options={brandOptions?.items ?? []} selected={brands} onChange={(next) => { setBrands(next); setPage(0); }} />
+        <button className={`chip${newFunding ? ' active' : ''}`} title="People whose recent papers acknowledge a new grant (spotted in the last 60 days)" onClick={() => { setQuery({ newFunding: newFunding ? null : '1' }); setPage(0); }}>
+          New funding
+        </button>
         <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} style={{ minWidth: 150 }}>
           <option value="score">Highest score</option>
           <option value="createdAt">Newest first</option>
@@ -342,6 +347,11 @@ export function LeadsPage() {
                     </span>
                   )}
                 </div>
+                {lead.fundingAlertAt && Date.now() - new Date(lead.fundingAlertAt).getTime() < 60 * 86_400_000 && (
+                  <span className="badge badge-grant" title="A recent paper acknowledges a new grant — see the Funding tab">
+                    New grant
+                  </span>
+                )}
                 {instruments.length > 0 && (
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     {instruments.slice(0, 2).map((inst) => (

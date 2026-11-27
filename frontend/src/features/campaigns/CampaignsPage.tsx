@@ -124,6 +124,16 @@ export function CampaignsPage() {
                           <strong>{c.stats.queued}</strong> waiting
                         </span>
                       )}
+                      {c.stats.sent > 0 && (
+                        <span title="Opened at least once (an estimate: some mail apps block or pre-load images)">
+                          <strong>{c.stats.opened}</strong> opened
+                        </span>
+                      )}
+                      {c.stats.sent > 0 && (
+                        <span>
+                          <strong>{c.stats.clicked}</strong> clicked
+                        </span>
+                      )}
                       <span>
                         <strong>{c.stats.replied}</strong> replied
                       </span>

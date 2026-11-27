@@ -80,14 +80,19 @@ const decode = (s?: string) =>
 let firestoreSource: WebsiteSource | null = null;
 
 /** The live website, through firebase-admin with the website's service-account key (read-only use). */
-export async function websiteFirestoreSource(): Promise<WebsiteSource> {
-  if (firestoreSource) return firestoreSource;
+/** The website's Firestore (its own named firebase-admin app), shared by the catalog and enquiry watchers. */
+export async function websiteFirestore() {
   const keyPath = env.WEBSITE_FIREBASE_KEY_PATH;
   if (!fs.existsSync(keyPath)) throw new Error(`No website service-account key at ${keyPath} — set WEBSITE_FIREBASE_KEY_PATH.`);
   const { initializeApp, cert, getApps } = await import('firebase-admin/app');
   const { getFirestore } = await import('firebase-admin/firestore');
   const app = getApps().find((a) => a.name === 'website') ?? initializeApp({ credential: cert(JSON.parse(fs.readFileSync(keyPath, 'utf8'))) }, 'website');
-  const db = getFirestore(app);
+  return getFirestore(app);
+}
+
+export async function websiteFirestoreSource(): Promise<WebsiteSource> {
+  if (firestoreSource) return firestoreSource;
+  const db = await websiteFirestore();
   firestoreSource = {
     async list() {
       const snap = await db.collectionGroup('products').get();

@@ -16,3 +16,13 @@ dashboardRouter.get(
     res.json(await buildDashboard(range));
   }),
 );
+
+/** Email last week's summary to the team now (it also goes out by itself every Monday at 09:00 IST). */
+dashboardRouter.post(
+  '/weekly-summary',
+  asyncHandler(async (_req, res) => {
+    const { sendWeeklySummary } = await import('../services/reports/weeklySummary.js');
+    await sendWeeklySummary();
+    res.json({ sent: true });
+  }),
+);

@@ -16,6 +16,8 @@
  * Sending is the ordinary campaign worker (pace, daily cap, opt-outs re-checked).
  * A launch whose AI steps fail is retried on the next watcher run (up to 5 times).
  */
+import { personalise } from './campaignRender.js';
+import { escapeRegex } from '../../utils/regex.js';
 import { env } from '../../config/env.js';
 import { CampaignAssetModel, CampaignModel, CampaignRecipientModel } from '../../models/campaign.model.js';
 import type { CampaignBlock } from '../../models/campaign.model.js';
@@ -142,7 +144,6 @@ export function setLaunchAi(deps: { copy?: CopyWriter | null; rate?: Rater | nul
 
 // --- Steps -------------------------------------------------------------------------------------------------
 
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Leads worth asking the AI about: in the CRM, reachable, and overlapping the product's areas or keywords. */
 async function candidatesFor(p: Product): Promise<Candidate[]> {
@@ -273,8 +274,10 @@ export async function processPendingLaunches(now = new Date()): Promise<number> 
   return made;
 }
 
-async function notifyTeam(product: Product, copy: LaunchCopy | null, count: number, sample: Array<{ name: string; score: number }>, settings: LaunchSettings, campaign: { id: string; sendAt: Date | null } | null): Promise<void> {
+export async function notifyTeam(product: Product, copy: LaunchCopy | null, count: number, sample: Array<{ name: string; score: number }>, settings: LaunchSettings, campaign: { id: string; sendAt: Date | null } | null): Promise<void> {
   const link = campaign ? `${env.appUrl}/campaigns?id=${campaign.id}` : `${env.appUrl}/campaigns`;
+  // The preview is personalised for the best match, so the team sees the email as it will arrive.
+  const sampleRecipient = { name: sample[0]?.name ?? 'Dr. Priya Sharma', title: /^prof/i.test(sample[0]?.name ?? '') ? 'Professor' : undefined };
   const when = campaign?.sendAt ? campaign.sendAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : null;
   const intro = !campaign
     ? `It was added to the CRM catalog and to discovery's keywords, but nobody in the CRM rated ${settings.minRelevance}+ for it, so no email was prepared.`
@@ -284,7 +287,7 @@ async function notifyTeam(product: Product, copy: LaunchCopy | null, count: numb
   const html = shell(
     `New product on the website: ${product.name}`,
     intro,
-    `${copy ? `<p style="margin:0 0 4px;font-weight:600">${esc(copy.subject)}</p><div style="background:#f3f5f9;border-radius:8px;padding:10px 14px;margin:0 0 14px;white-space:pre-wrap">${esc(copy.paragraphs.join('\n\n'))}</div>` : ''}
+    `${copy ? `<p style="margin:0 0 4px;font-weight:600">${esc(personalise(copy.subject, sampleRecipient))}</p><div style="background:#f3f5f9;border-radius:8px;padding:10px 14px;margin:0 0 4px;white-space:pre-wrap">${esc(personalise(copy.paragraphs.join('\n\n'), sampleRecipient))}</div><p style="margin:0 0 14px;color:#6b7280;font-size:12px">Shown as ${esc(sampleRecipient.name)} will see it; each person gets their own name.</p>` : ''}
 ${sample.length ? `<p style="margin:0 0 4px;font-weight:600">Best matches</p><ul style="margin:0 0 14px;padding-left:18px">${sample.map((s) => `<li>${esc(s.name)} — relevance ${s.score}</li>`).join('')}</ul>` : ''}
 <p>${button(link, campaign ? 'Review the campaign' : 'Open Campaigns')}</p>`,
   );

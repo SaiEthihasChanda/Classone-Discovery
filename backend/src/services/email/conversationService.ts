@@ -11,6 +11,7 @@
  * wrote it, so there is no approval step; an AI suggestion only fills the
  * editor and is never sent by itself.
  */
+import { escapeRegex } from '../../utils/regex.js';
 import { ApiError } from '../../middleware/errorHandler.js';
 import { ContactModel, touchContact } from '../../models/contact.model.js';
 import { EmailThreadModel } from '../../models/emailThread.model.js';
@@ -197,7 +198,6 @@ export async function personDetail(email: string) {
   };
 }
 
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 async function findLeadByEmail(email: string): Promise<Lead | null> {
   const doc = await LeadModel.findOne({ 'person.email': { $regex: `^${escapeRegex(email)}$`, $options: 'i' } }).lean();
   return doc ? repositories.leads.findById(String(doc._id)) : null;
@@ -370,7 +370,8 @@ export async function needsYouQueue(): Promise<QueueItem[]> {
     const lastIn = [...t.messages].reverse().find((m) => m.direction === 'inbound');
     const waiting = Boolean(t.awaitingReplySince);
     // A first outreach draft belongs to Leads / the lead record, not to "needs you".
-    if (!waiting && (t.draftType === 'initial_outreach' || !t.messages.length)) continue;
+    // A grant note may be the first email to them, and still belongs here.
+    if (!waiting && t.draftType !== 'grant_note' && (t.draftType === 'initial_outreach' || !t.messages.length)) continue;
     items.push({
       threadId: t.id,
       kind: waiting ? 'reply' : 'followup',

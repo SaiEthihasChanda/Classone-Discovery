@@ -1559,6 +1559,22 @@ async function main(): Promise<void> {
   await runLaunchTests(check);
   const { runDashboardTests } = await import('./dashboardTests.js');
   await runDashboardTests(check);
+  const { runEnquiryTests } = await import('./enquiryTests.js');
+  await runEnquiryTests(check);
+  const { runTrackingTests } = await import('./trackingTests.js');
+  await runTrackingTests(check);
+  const { runWeeklySummaryTests } = await import('./weeklySummaryTests.js');
+  await runWeeklySummaryTests(check);
+  const { runReengageTests } = await import('./reengageTests.js');
+  await runReengageTests(check);
+  const { runAuditTests } = await import('./auditTests.js');
+  await runAuditTests(check, base);
+  const { runScheduleTests } = await import('./scheduleTests.js');
+  await runScheduleTests(check, base);
+  const { runResultsTests } = await import('./resultsTests.js');
+  await runResultsTests(check);
+  const { runFundingTests } = await import('./fundingTests.js');
+  await runFundingTests(check, base);
 
   // --- Teardown -----------------------------------------------------------
   server.close();

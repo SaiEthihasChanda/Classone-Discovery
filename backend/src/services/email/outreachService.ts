@@ -96,7 +96,9 @@ export async function approveAndSendOutreach(threadId: string, options: { sentBy
   }
 
   const isResponse = thread.draftType === 'response';
-  const isFollowUp = thread.draftType !== 'initial_outreach' && !isResponse;
+  const isCheckIn = thread.draftType === 'check_in';
+  const isGrantNote = thread.draftType === 'grant_note';
+  const isFollowUp = thread.draftType === 'follow_up_1' || thread.draftType === 'follow_up_2';
   // Answering a "not interested" closes the conversation; any other answer re-opens it for a follow-up if they go quiet.
   const closes = isResponse && (thread.draftIntent === 'not_interested' || thread.draftIntent === 'unsubscribe');
 
@@ -110,11 +112,14 @@ export async function approveAndSendOutreach(threadId: string, options: { sentBy
     sentBy: options.sentBy,
     closes,
     countsAsFollowUp: isFollowUp,
+    // One check-in, no automatic follow-ups after it.
+    noFollowUp: isCheckIn || isGrantNote || undefined,
   });
+  if (isGrantNote) await (await import('../funding/fundingAlerts.js')).noteThreadSettled(thread.id, 'sent');
 
   await logActivity({
     type: isFollowUp ? 'follow_up_sent' : 'email_sent',
-    message: `${isFollowUp ? 'Follow-up' : isResponse ? 'Reply' : 'Outreach'} sent to ${contact.name}`,
+    message: `${isFollowUp ? 'Follow-up' : isResponse ? 'Reply' : isCheckIn ? 'Check-in' : isGrantNote ? 'Grant note' : 'Outreach'} sent to ${contact.name}`,
     relatedLeadId: lead?.id,
     relatedThreadId: thread.id,
     metadata: { provider: updated.provider },
@@ -253,6 +258,13 @@ export async function rejectDraft(threadId: string): Promise<EmailThread> {
   if (thread.draftType === 'response') {
     const closes = thread.draftIntent === 'not_interested' || thread.draftIntent === 'unsubscribe';
     const updated = await repositories.threads.updateById(thread.id, closes ? { status: 'closed', closedReason: 'replied' } : { status: 'replied' }, { unset: DRAFT_FIELDS });
+    return updated ?? thread;
+  }
+
+  // Not checking in: the conversation goes back to quiet, with nothing scheduled.
+  if (thread.draftType === 'grant_note') await (await import('../funding/fundingAlerts.js')).noteThreadSettled(thread.id, 'dismissed');
+  if (thread.draftType === 'check_in' || (thread.draftType === 'grant_note' && thread.messages.length > 0)) {
+    const updated = await repositories.threads.updateById(thread.id, { status: 'replied' }, { unset: DRAFT_FIELDS });
     return updated ?? thread;
   }
 

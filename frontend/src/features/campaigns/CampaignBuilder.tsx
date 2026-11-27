@@ -4,6 +4,7 @@
  * send (subject, test email, pace, send now or schedule). Saves as you go.
  * Once sending, it becomes a report: progress, who got it, who replied.
  */
+import { CampaignResults } from './CampaignResults';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
@@ -748,6 +749,7 @@ function CampaignReport({ campaign: c, onChanged, onOpen, onEdit }: { campaign: 
           <iframe title="Email preview" srcDoc={html} sandbox="" />
         </div>
       </div>
+      <CampaignResults campaignId={c.id} tick={tick} />
     </div>
   );
 }

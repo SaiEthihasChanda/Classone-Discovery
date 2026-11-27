@@ -8,7 +8,7 @@ export function SignInScreen() {
     <div className="auth-screen">
       <div className="auth-card">
         <img src="/classone-logo.png" alt="Class One Systems" className="auth-logo" />
-        <h1>Sales Automation</h1>
+        <h1>ClassOne Discovery</h1>
 
         {status === 'loading' && <p className="muted">Checking your sign-in…</p>}
 

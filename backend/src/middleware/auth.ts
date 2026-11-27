@@ -16,6 +16,7 @@ import { getAuth } from 'firebase-admin/auth';
 import { env } from '../config/env.js';
 import { AppUserModel, type Role } from '../models/appUser.model.js';
 import { ApiError } from './errorHandler.js';
+import { runWithUser } from './requestContext.js';
 
 export interface AuthUser {
   uid: string;
@@ -31,7 +32,8 @@ declare module 'express-serve-static-core' {
   }
 }
 
-const DEV_USER: AuthUser = { uid: 'dev', email: 'dev@localhost', name: 'Local developer', role: 'admin' };
+// With sign-in off (local development, the demo copy), everyone acts as this user; DEV_USER_* name them.
+const DEV_USER: AuthUser = { uid: 'dev', email: process.env.DEV_USER_EMAIL ?? 'dev@localhost', name: process.env.DEV_USER_NAME ?? 'Local developer', role: 'admin' };
 const INTERNAL_USER: AuthUser = { uid: 'internal', email: 'internal@localhost', name: 'Internal service', role: 'admin' };
 
 function firebaseAuth() {
@@ -104,5 +106,6 @@ export function authorize(req: Request, _res: Response, next: NextFunction): voi
   if (role === 'pending') return next(new ApiError(403, 'Your account is waiting for an admin to grant access'));
   if (isAdminOnly(req) && role !== 'admin') return next(new ApiError(403, 'Admins only'));
   if (req.method !== 'GET' && role === 'viewer') return next(new ApiError(403, 'Your role is read-only'));
-  next();
+  // The rest of the request runs knowing who is acting (activity log, audit trail).
+  runWithUser(req, _res, next);
 }

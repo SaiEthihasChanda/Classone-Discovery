@@ -7,6 +7,7 @@
  * Conversations shows. The volume here is hundreds to low thousands of threads,
  * so they are read once and counted in memory.
  */
+import { engagementSince } from '../campaigns/campaignResults.js';
 import { env } from '../../config/env.js';
 import { CampaignModel, CampaignRecipientModel } from '../../models/campaign.model.js';
 import { EmailThreadModel } from '../../models/emailThread.model.js';
@@ -195,7 +196,9 @@ export async function buildDashboard(range: Range, now = new Date()) {
       const replied = threads.filter((t) => tIds.has(String(t._id)) && t.messages.some((m) => m.direction === 'inbound')).length;
       const leadIds = sentRows.map((r) => r.leadId).filter((x): x is string => Boolean(x && /^[a-f\d]{24}$/i.test(x)));
       const unsubscribed = leadIds.length ? await LeadModel.countDocuments({ _id: { $in: leadIds }, doNotContact: true }) : 0;
-      return { id, name: c.name as string, kind: (c.kind as string) ?? 'manual', status: c.status as string, sent: sentRows.length, replied, unsubscribed, replyRate: rate(replied, sentRows.length) };
+      const opened = await CampaignRecipientModel.countDocuments({ campaignId: id, status: 'sent', openedAt: { $exists: true } });
+      const clicked = await CampaignRecipientModel.countDocuments({ campaignId: id, status: 'sent', clickedAt: { $exists: true } });
+      return { id, name: c.name as string, kind: (c.kind as string) ?? 'manual', status: c.status as string, sent: sentRows.length, opened, clicked, replied, unsubscribed, replyRate: rate(replied, sentRows.length) };
     }),
   );
 
@@ -236,6 +239,7 @@ export async function buildDashboard(range: Range, now = new Date()) {
       followUps,
       campaigns: campaignRows,
       topProducts,
+      engagement: await engagementSince(from, now),
     },
     team: teamRows,
     activity: await repositories.activity.findRecent(12),
@@ -281,6 +285,9 @@ export async function buildAlerts(now = new Date(), overdueBefore = new Date(now
       to: `/campaigns?id=${String(l._id)}`,
     });
   }
+  const { recentFundingCount } = await import('../funding/fundingAlerts.js');
+  const funded = await recentFundingCount(7);
+  if (funded) out.push({ level: 'info', title: `${funded} ${funded === 1 ? 'person' : 'people'} got new funding this week`, detail: 'A congratulations note is drafted for each, waiting in Conversations → Needs you.', to: '/leads?status=all&newFunding=1' });
   const sync = await getState<{ at: string; failed: number }>('websiteCatalogLastSync');
   if (sync?.failed) out.push({ level: 'warning', title: `${sync.failed} new website product${sync.failed === 1 ? '' : 's'} could not be classified`, detail: 'It is retried every 30 minutes.', to: '/admin?tab=catalog' });
   return out;

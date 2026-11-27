@@ -45,6 +45,24 @@ conversationsRouter.get(
   }),
 );
 
+/** Re-engagement check-ins: on/off, how long someone must be quiet, and how many a day (drafts only). */
+conversationsRouter.get(
+  '/check-ins',
+  asyncHandler(async (_req, res) => {
+    const { getReengageSettings } = await import('../services/email/reengage.js');
+    res.json(await getReengageSettings());
+  }),
+);
+
+conversationsRouter.put(
+  '/check-ins',
+  asyncHandler(async (req, res) => {
+    const body = z.object({ enabled: z.boolean().optional(), quietDays: z.number().int().min(30).max(365).optional(), dailyMax: z.number().int().min(1).max(50).optional() }).parse(req.body ?? {});
+    const { setReengageSettings } = await import('../services/email/reengage.js');
+    res.json(await setReengageSettings(body));
+  }),
+);
+
 /** The global follow-up switch: Auto sends due follow-ups by themselves (inside the send window). */
 conversationsRouter.get(
   '/settings',

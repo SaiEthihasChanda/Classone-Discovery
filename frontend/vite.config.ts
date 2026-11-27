@@ -13,5 +13,8 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Same as the deployed site (deploy/Caddyfile.template): /api on the app's own address reaches the
+    // backend, so links built from APP_URL — campaign tracking, booking — also work in development.
+    proxy: { '/api': process.env.VITE_PROXY_TARGET ?? 'http://localhost:4000' },
   },
 });

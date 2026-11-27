@@ -72,3 +72,24 @@ adminRouter.post(
     });
   }),
 );
+
+/** The team activity log (Admin → Activity): who did what, searchable. Admins only (all of /admin is). */
+adminRouter.get(
+  '/activity',
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        text: z.string().max(200).optional(),
+        actor: z.string().max(200).optional(),
+        kind: z.enum(['people', 'system']).optional(),
+        from: z.coerce.date().optional(),
+        to: z.coerce.date().optional(),
+        before: z.coerce.date().optional(),
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+      })
+      .parse(req.query);
+    const { repositories } = await import('../repositories/index.js');
+    const [items, actors] = await Promise.all([repositories.activity.search(q), q.before ? Promise.resolve(undefined) : repositories.activity.actors()]);
+    res.json({ items, actors });
+  }),
+);

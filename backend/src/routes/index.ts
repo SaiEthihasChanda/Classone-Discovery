@@ -15,7 +15,10 @@ import { campaignsRouter } from './campaigns.routes.js';
 import { publicRouter } from './public.routes.js';
 import { threadsRouter } from './threads.routes.js';
 import { usersRouter } from './users.routes.js';
+import { schedulesRouter } from './schedules.routes.js';
+import { fundingRouter } from './funding.routes.js';
 import { authenticate, authorize } from '../middleware/auth.js';
+import { auditTrail } from '../middleware/requestContext.js';
 
 export const apiRouter = Router();
 
@@ -57,7 +60,7 @@ apiRouter.get('/me', authenticate, (req, res) => {
 });
 // "Review & send" links from team emails: signed tokens, no sign-in (routes/public.routes.ts).
 apiRouter.use('/public', publicRouter);
-apiRouter.use(authenticate, authorize);
+apiRouter.use(authenticate, authorize, auditTrail);
 
 apiRouter.use('/users', usersRouter);
 apiRouter.use('/leads', leadsRouter);
@@ -71,3 +74,5 @@ apiRouter.use('/pipeline', pipelineRouter);
 apiRouter.use('/threads', threadsRouter);
 apiRouter.use('/conversations', conversationsRouter);
 apiRouter.use('/campaigns', campaignsRouter);
+apiRouter.use('/schedules', schedulesRouter);
+apiRouter.use('/funding', fundingRouter);

@@ -201,6 +201,24 @@ campaignsRouter.delete(
   }),
 );
 
+/** Person by person: opened, clicked which links, opened the booking page, booked, replied. */
+campaignsRouter.get(
+  '/:id/results',
+  asyncHandler(async (req, res) => {
+    const { campaignResults } = await import('../services/campaigns/campaignResults.js');
+    res.json(await campaignResults(req.params.id!));
+  }),
+);
+
+/** Drafts a follow-up (for approval) to everyone who opened the booking page but did not book. */
+campaignsRouter.post(
+  '/:id/nudge-non-bookers',
+  asyncHandler(async (req, res) => {
+    const { nudgeNonBookers } = await import('../services/campaigns/campaignResults.js');
+    res.json({ drafted: await nudgeNonBookers(req.params.id!) });
+  }),
+);
+
 campaignsRouter.get(
   '/:id/recipients',
   asyncHandler(async (req, res) => {

@@ -18,7 +18,7 @@ const messageSchema = new Schema(
     direction: { type: String, enum: ['outbound', 'inbound'], required: true },
     type: {
       type: String,
-      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2', 'reply', 'response', 'manual', 'campaign'],
+      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2', 'reply', 'response', 'manual', 'campaign', 'check_in', 'grant_note'],
       required: true,
     },
     subject: { type: String, required: true },
@@ -68,7 +68,7 @@ const emailThreadSchema = new Schema(
      */
     draftType: {
       type: String,
-      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2', 'response'],
+      enum: ['initial_outreach', 'follow_up_1', 'follow_up_2', 'response', 'check_in', 'grant_note'],
     },
     draftSubject: String,
     draftBody: String,

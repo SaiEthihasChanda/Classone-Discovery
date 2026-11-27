@@ -7,6 +7,8 @@ import { NewLeadPage } from './features/leads/NewLeadPage';
 import { ConversationsPage } from './features/conversations/ConversationsPage';
 import { SendDraftPage } from './features/conversations/SendDraftPage';
 import { CampaignsPage } from './features/campaigns/CampaignsPage';
+import { SchedulesPage } from './features/schedules/SchedulesPage';
+import { BookingPage } from './features/schedules/BookingPage';
 import { AdminPage } from './features/admin/AdminPage';
 import { useAuth } from './auth/AuthProvider';
 import { SignInScreen } from './auth/SignInScreen';
@@ -42,6 +44,7 @@ function Sidebar() {
     { to: '/leads', label: 'CRM', icon: 'leads', count: counts?.review },
     { to: '/conversations', label: 'Conversations', icon: 'chat', count: counts?.conversations },
     { to: '/campaigns', label: 'Campaigns', icon: 'megaphone' },
+    { to: '/schedules', label: 'Schedules', icon: 'calendar' },
     { to: '/admin', label: 'Admin', icon: 'admin' },
   ];
   const initials = (me?.name ?? me?.email ?? '?')
@@ -54,7 +57,7 @@ function Sidebar() {
     <nav className="sidebar">
       <div className="sidebar-brand">
         <img src="/classone-logo.png" alt="Class One Systems" />
-        <span>Sales</span>
+        <span>Discovery</span>
       </div>
       {items.map((item) => (
         <NavLink key={item.to} to={item.to} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`} title={item.label}>
@@ -102,6 +105,8 @@ export function App() {
   const { pathname } = useLocation();
   // "Review & send" links from team emails work without signing in (the signed link is the permission).
   if (pathname.startsWith('/act/send')) return <SendDraftPage />;
+  // The public demo-booking page: for customers, no sign-in.
+  if (pathname === '/book' || pathname.startsWith('/book/')) return <BookingPage />;
   if (status !== 'ready') return <SignInScreen />;
 
   return (
@@ -121,6 +126,7 @@ export function App() {
           <Route path="/leads/:id" element={<LeadRedirect />} />
           <Route path="/conversations" element={<ConversationsPage />} />
           <Route path="/campaigns" element={<CampaignsPage />} />
+          <Route path="/schedules" element={<SchedulesPage />} />
           <Route path="/outreach" element={<Navigate to="/conversations" replace />} />
           <Route path="/admin" element={<AdminPage />} />
 

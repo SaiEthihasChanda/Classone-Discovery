@@ -229,14 +229,14 @@ export const button = (href: string, label: string, primary = true) =>
   `<a href="${esc(href)}" style="display:inline-block;padding:9px 16px;margin:0 8px 0 0;border-radius:7px;text-decoration:none;font-weight:600;font-size:14px;${primary ? `background:${NAVY};color:#fff` : `background:#eef1f8;color:${NAVY}`}">${esc(label)}</a>`;
 export const shell = (title: string, intro: string, body: string) => `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1a2033;max-width:680px">
 <h2 style="margin:0 0 4px;font-size:19px;color:${NAVY}">${esc(title)}</h2><p style="margin:0 0 18px;color:#4b5563">${intro}</p>${body}
-<p style="margin:20px 0 0;color:#9aa1ad;font-size:12px">From the Class One CRM. "Review &amp; send" opens a page to check the reply and send it — nothing is sent from this email by itself.</p></div>`;
+<p style="margin:20px 0 0;color:#9aa1ad;font-size:12px">From ClassOne Discovery.${body.includes('Review &amp; send') ? ' "Review &amp; send" opens a page to check the reply and send it — nothing is sent from this email by itself.' : ''}</p></div>`;
 const daysSince = (d: Date | string, now: Date) => Math.max(1, Math.floor((now.getTime() - new Date(d).getTime()) / (24 * HOUR)));
 
 export async function sendToTeam(subject: string, html: string, text: string): Promise<void> {
   for (const to of await teamRecipients()) await getEmailTransport().send({ to, subject, html, text, internal: true });
 }
 
-async function notifyHoldingReply(thread: EmailThread, name: string, email: string, lastIn: EmailThread['messages'][number], holding: string): Promise<void> {
+export async function notifyHoldingReply(thread: EmailThread, name: string, email: string, lastIn: EmailThread['messages'][number], holding: string): Promise<void> {
   const link = thread.draftBody ? sendLink(thread) : undefined;
   const html = shell(
     `Holding reply sent to ${name}`,

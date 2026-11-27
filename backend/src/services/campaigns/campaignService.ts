@@ -13,6 +13,7 @@
  * person, so a reply lands in Conversations under them. Campaign mails never
  * trigger automatic follow-ups.
  */
+import { escapeRegex } from '../../utils/regex.js';
 import { env } from '../../config/env.js';
 import { ApiError } from '../../middleware/errorHandler.js';
 import { CampaignAssetModel, CampaignModel, CampaignRecipientModel, type CampaignAudience, type CampaignBlock } from '../../models/campaign.model.js';
@@ -24,10 +25,10 @@ import type { Product } from '../../types/domain.js';
 import { geminiGenerate, geminiModels } from '../ai/geminiProvider.js';
 import { sendOnNewThread } from '../email/outreachService.js';
 import { inSendWindow } from '../../utils/sendWindow.js';
+import { addTracking, engagementByCampaign } from './tracking.js';
 import { getEmailTransport } from '../email/transports/index.js';
 import { listUnsubscribeHeader, renderCampaign, type Asset, type Recipient } from './campaignRender.js';
 
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // --- Audience ---------------------------------------------------------------------------------------
 
@@ -165,11 +166,12 @@ export async function listCampaigns() {
   const ids = docs.map((d) => d.id);
   const counts = (await CampaignRecipientModel.aggregate([{ $match: { campaignId: { $in: ids } } }, { $group: { _id: { c: '$campaignId', s: '$status' }, n: { $sum: 1 } } }])) as Array<{ _id: { c: string; s: string }; n: number }>;
   const replied = await repliesByCampaign(ids);
+  const engagement = await engagementByCampaign(ids);
   return docs.map((d) => {
     const by = (s: string) => counts.find((x) => x._id.c === d.id && x._id.s === s)?.n ?? 0;
     const queued = by('queued');
     const sent = by('sent');
-    return { ...d, blocks: undefined, blockCount: d.blocks.length, stats: { total: queued + sent + by('failed') + by('skipped'), queued, sent, failed: by('failed'), skipped: by('skipped'), replied: replied.get(d.id) ?? 0 } };
+    return { ...d, blocks: undefined, blockCount: d.blocks.length, stats: { total: queued + sent + by('failed') + by('skipped'), queued, sent, failed: by('failed'), skipped: by('skipped'), replied: replied.get(d.id) ?? 0, opened: engagement.get(d.id)?.opened ?? 0, clicked: engagement.get(d.id)?.clicked ?? 0 } };
   });
 }
 
@@ -344,7 +346,8 @@ async function sendOne(c: CampaignDoc, r: { _id: unknown; leadId?: string; email
     to: r.email,
     subject: out.subject,
     body: out.text,
-    html: out.html,
+    // Real sends only (not previews or test sends): an open image and tracked links for this recipient.
+    html: addTracking(out.html, String(r._id)),
     attachments: out.attachments,
     listUnsubscribe: listUnsubscribeHeader(),
     type: 'campaign',

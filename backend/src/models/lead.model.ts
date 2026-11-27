@@ -77,6 +77,7 @@ const leadSchema = new Schema(
           'manual_discovery_trigger',
           'faculty_roster',
           'inbound_email',
+          'website_enquiry',
         ],
         required: true,
       },
@@ -179,6 +180,10 @@ const leadSchema = new Schema(
     /** Promoted by the Prospects conveyor but still filling contact info — hidden from Leads until done. */
     inPipeline: { type: Boolean, index: true },
     doNotContact: Boolean,
+    /** When a re-engagement check-in was last drafted for them (services/email/reengage.ts). */
+    lastCheckInAt: Date,
+    /** When a new grant of theirs was last spotted (services/funding/fundingAlerts.ts) — the CRM badge and filter. */
+    fundingAlertAt: { type: Date, index: true },
 
     tags: { type: [String], default: [] },
   },

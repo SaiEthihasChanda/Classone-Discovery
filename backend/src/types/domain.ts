@@ -25,7 +25,9 @@ export type LeadSourceType =
   /** Promoted from the faculty roster (see `FacultyMember`). */
   | 'faculty_roster'
   /** Wrote to the sales inbox first (services/email/inboxPoller.ts). */
-  | 'inbound_email';
+  | 'inbound_email'
+  /** Sent the enquiry form on classonesystems.in (services/enquiries/enquiryWatcher.ts). */
+  | 'website_enquiry';
 
 /**
  * Lifecycle of a lead.
@@ -288,7 +290,11 @@ export type MessageType =
   /** Outbound: written by a person in Conversations (or sent from Gmail itself and synced). */
   | 'manual'
   /** Outbound: one recipient's copy of a campaign (services/campaigns). */
-  | 'campaign';
+  | 'campaign'
+  /** Outbound: a re-engagement check-in to someone who went quiet (services/email/reengage.ts). */
+  | 'check_in'
+  /** Outbound: congratulations on a new grant (services/funding/fundingAlerts.ts). */
+  | 'grant_note';
 
 export interface ThreadMessage {
   messageId: string;
@@ -394,7 +400,14 @@ export type ActivityType =
   | 'thread_closed'
   | 'discovery_run_completed'
   | 'outreach_batch_completed'
-  | 'system_error';
+  | 'system_error'
+  | 'draft_created'
+  | 'user_action'
+  | 'visit_assigned'
+  | 'visit_updated'
+  | 'visit_checked_in'
+  | 'visit_checked_out'
+  | 'booking_created';
 
 export type ActivitySeverity = 'info' | 'warning' | 'critical';
 
@@ -410,6 +423,9 @@ export interface ActivityLogEntry {
   relatedLeadId?: string;
   relatedThreadId?: string;
   metadata?: Record<string, unknown>;
+  /** Who did it (a signed-in person's email); absent for the system's own work. */
+  actor?: string;
+  actorName?: string;
   createdAt: Date;
 }
 

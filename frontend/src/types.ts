@@ -15,7 +15,10 @@ export type LeadSourceType =
   | 'university_news'
   | 'grant_portal'
   | 'manual'
-  | 'manual_discovery_trigger';
+  | 'manual_discovery_trigger'
+  | 'faculty_roster'
+  | 'inbound_email'
+  | 'website_enquiry';
 
 export type FollowUpStatusSummary = 'not_started' | 'in_progress' | 'closed';
 
@@ -79,6 +82,8 @@ export interface Lead {
   };
   followUpStatusSummary: FollowUpStatusSummary;
   activeThreadId?: string;
+  /** When a new grant of theirs was spotted (funding alerts). */
+  fundingAlertAt?: string;
   tags: string[];
   createdAt: string;
   updatedAt: string;
@@ -186,7 +191,8 @@ export interface CampaignListItem extends Omit<Campaign, 'blocks'> {
   kind?: 'manual' | 'product_launch';
   reviewUntil?: string;
   blockCount: number;
-  stats: { total: number; queued: number; sent: number; failed: number; skipped: number; replied: number };
+  /** opened / clicked: people who opened or clicked at least once (an estimate — see tracking.ts). */
+  stats: { total: number; queued: number; sent: number; failed: number; skipped: number; replied: number; opened: number; clicked: number };
 }
 
 export interface CampaignRecipient {
@@ -304,7 +310,7 @@ export interface EmailThread {
   }[];
   followUp: { attemptsSent: number; maxAttempts: number; nextCheckAt?: string; replyDetected: boolean };
   /** A pending, unsent draft — present only while status is 'draft'. */
-  draftType?: 'initial_outreach' | 'follow_up_1' | 'follow_up_2' | 'response';
+  draftType?: 'initial_outreach' | 'follow_up_1' | 'follow_up_2' | 'response' | 'check_in' | 'grant_note';
   /** A `response` draft: what their mail was about. */
   draftIntent?: string;
   draftSubject?: string;
@@ -343,6 +349,10 @@ export interface ActivityLogEntry {
   severity: 'info' | 'warning' | 'critical';
   message: string;
   relatedLeadId?: string;
+  relatedThreadId?: string;
+  /** Who did it (email) — absent when the app did it by itself. */
+  actor?: string;
+  actorName?: string;
   createdAt: string;
 }
 
@@ -375,8 +385,10 @@ export interface DashboardData {
     replyRate: number | null;
     medianReplyHours: number | null;
     followUps: { auto: number; approved: number };
-    campaigns: Array<{ id: string; name: string; kind: string; status: string; sent: number; replied: number; unsubscribed: number; replyRate: number | null }>;
+    campaigns: Array<{ id: string; name: string; kind: string; status: string; sent: number; opened: number; clicked: number; replied: number; unsubscribed: number; replyRate: number | null }>;
     topProducts: Array<{ productId: string; name: string; repliers: number }>;
+    /** Campaign emails sent in the period and what people did with them (links and demo bookings). */
+    engagement?: { emailed: number; opened: number; clicked: number; clickedBooking: number; bookedAfterClick: number; clickedNotBooked: number; bookings: number };
   };
   team: Array<{ who: string; name: string; sent: number; approved: number; medianResponseHours: number | null; waiting: number }>;
   activity: ActivityLogEntry[];
@@ -639,4 +651,104 @@ export interface MailboxImport {
   startedAt: string;
   finishedAt?: string;
   error?: string;
+}
+
+/** Re-engagement check-ins (drafts for people who went quiet). */
+export interface CheckInSettings {
+  enabled: boolean;
+  quietDays: number;
+  dailyMax: number;
+}
+
+// --- Schedules ---------------------------------------------------------------------------------------
+export type EventType = 'visit' | 'demo' | 'call' | 'meeting' | 'blocked' | 'other';
+export type EventStatus = 'scheduled' | 'on_the_way' | 'checked_in' | 'done' | 'cancelled';
+export interface FieldPoint {
+  at: string;
+  lat?: number;
+  lng?: number;
+  accuracy?: number;
+  note?: string;
+}
+export interface ScheduleEvent {
+  id: string;
+  title: string;
+  type: EventType;
+  start: string;
+  end: string;
+  allDay?: boolean;
+  leadId?: string;
+  contactEmail?: string;
+  contactName?: string;
+  institution?: string;
+  mode?: 'in_person' | 'online';
+  address?: string;
+  meetingLink?: string;
+  assignee?: string;
+  assigneeName?: string;
+  notes?: string;
+  status: EventStatus;
+  /** As shown: a visit whose time passed with no check-in is "missed". */
+  displayStatus: EventStatus | 'missed';
+  onTheWay?: FieldPoint;
+  checkIn?: FieldPoint;
+  checkOut?: FieldPoint;
+  outcome?: string;
+  source?: 'app' | 'booking';
+  booking?: { name?: string; email?: string; phone?: string; institution?: string; message?: string };
+}
+export type EventInput = Partial<Omit<ScheduleEvent, 'id' | 'displayStatus' | 'onTheWay' | 'checkIn' | 'checkOut' | 'assignee'>> & { assignee?: string | null };
+export interface FieldPerson {
+  email: string;
+  name: string;
+  state: 'at_visit' | 'on_the_way' | 'scheduled' | 'done_for_day' | 'free';
+  current: ScheduleEvent | null;
+  next: ScheduleEvent | null;
+  lastLocation: { lat: number; lng: number; at: string; eventTitle: string; kind: 'onTheWay' | 'checkIn' | 'checkOut' } | null;
+  visits: ScheduleEvent[];
+}
+export interface BookingSettings {
+  enabled: boolean;
+  title: string;
+  days: number[];
+  startTime: string;
+  endTime: string;
+  durationMinutes: number;
+  bufferMinutes: number;
+  horizonDays: number;
+  noticeHours: number;
+  mode: 'online' | 'in_person';
+  assignee?: string;
+  intro: string;
+}
+export interface PublicBooking {
+  open: boolean;
+  title: string;
+  intro: string;
+  durationMinutes: number;
+  mode: 'online' | 'in_person';
+  slots: Array<{ start: string; end: string }>;
+}
+
+/** One recipient of a sent campaign, and what they did with it. */
+export interface CampaignResultRow {
+  id: string;
+  leadId?: string;
+  name?: string;
+  email: string;
+  status: string;
+  sentAt?: string;
+  openedAt?: string;
+  opens: number;
+  clickedAt?: string;
+  clicks: number;
+  links: Array<{ url: string; at: string }>;
+  clickedBooking: boolean;
+  booked: { eventId: string; start: string } | null;
+  replied: boolean;
+  nudged: boolean;
+}
+export interface CampaignResults {
+  rows: CampaignResultRow[];
+  summary: { sent: number; opened: number; clicked: number; clickedBooking: number; booked: number; clickedNotBooked: number; replied: number };
 }

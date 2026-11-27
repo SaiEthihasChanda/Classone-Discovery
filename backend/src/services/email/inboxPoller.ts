@@ -18,6 +18,7 @@
  * retried on later polls, up to MAX_ATTEMPTS. Needs gmail.readonly at least
  * (gmail.modify to also mark mail read in Gmail) — run `npm run gmail:auth`.
  */
+import { escapeRegex } from '../../utils/regex.js';
 import { getState, setState } from '../../models/systemState.model.js';
 import { ApiError } from '../../middleware/errorHandler.js';
 import { google, type gmail_v1 } from 'googleapis';
@@ -202,18 +203,19 @@ const NO_REPLY = /^[^@]*(no-?reply|do-?not-?reply|notification|mailer|bounce)[^@
 const ENQUIRY = new Set(['product_enquiry', 'quote_request', 'support_request', 'meeting_request']);
 /** Messages that don't wait for an answer from us. */
 const NO_ANSWER_INTENTS = new Set(['unsubscribe', 'out_of_office', 'not_interested']);
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 async function findLeadByEmail(email: string): Promise<Lead | null> {
   const doc = await LeadModel.findOne({ 'person.email': { $regex: `^${escapeRegex(email)}$`, $options: 'i' } }).sort({ createdAt: 1 }).lean();
   return doc ? repositories.leads.findById(String(doc._id)) : null;
 }
 
-async function createLeadFromMail(mail: RawMail, t: TriageResult): Promise<Lead> {
+async function createLeadFromMail(mail: RawMail, t: TriageResult, channel?: 'website'): Promise<Lead> {
   const name = t.contact.name || mail.fromName || mail.from.split('@')[0]!;
   return repositories.leads.create({
     status: 'pending_review',
-    source: { type: 'inbound_email', sourceRecordId: mail.from, discoveredAt: mail.receivedAt },
+    source: channel === 'website'
+      ? { type: 'website_enquiry', sourceRecordId: mail.gmailId, discoveredAt: mail.receivedAt }
+      : { type: 'inbound_email', sourceRecordId: mail.from, discoveredAt: mail.receivedAt },
     person: { name, normalizedNameKey: normalizeNameKey(name), email: mail.from, title: t.contact.title, phone: t.contact.phone },
     institution: {
       name: t.contact.institution,
@@ -224,7 +226,7 @@ async function createLeadFromMail(mail: RawMail, t: TriageResult): Promise<Lead>
     aiScoring: { recommendedProductIds: t.productIds },
     review: {},
     followUpStatusSummary: 'in_progress',
-    tags: ['inbound-enquiry'],
+    tags: channel === 'website' ? ['inbound-enquiry', 'website-enquiry'] : ['inbound-enquiry'],
   });
 }
 
@@ -280,7 +282,7 @@ const ACTION_LABEL = {
 } as const;
 
 /** Handles one incoming mail end to end. Throws on failure (the caller records it for a retry). */
-export async function processMail(mail: RawMail, opts: { history?: boolean } = {}): Promise<void> {
+export async function processMail(mail: RawMail, opts: { history?: boolean; channel?: 'website' } = {}): Promise<void> {
   const ours = mail.from === env.EMAIL_FROM_ADDRESS.toLowerCase();
   if (ours || mail.internal || NO_REPLY.test(mail.from) || BOUNCE.test(mail.from) || mail.bulk) {
     if (BOUNCE.test(mail.from) && mail.gmailThreadId) {
@@ -309,8 +311,9 @@ export async function processMail(mail: RawMail, opts: { history?: boolean } = {
   // 2. What it says (also gives the contact details read from the signature).
   const catalog = await repositories.products.findActive();
   const triage = await triageInbound(mail, lead, thread, catalog);
-  if (!lead && ENQUIRY.has(triage.intent)) {
-    lead = await createLeadFromMail(mail, triage);
+  // A website enquiry form is always someone asking about our products: an unknown sender becomes a lead.
+  if (!lead && (ENQUIRY.has(triage.intent) || opts.channel === 'website')) {
+    lead = await createLeadFromMail(mail, triage, opts.channel);
     matchedBy = 'new_lead';
   }
   const name = lead?.person.name ?? triage.contact.name ?? mail.fromName;
@@ -524,7 +527,7 @@ async function handleIds(source: InboxSource, incoming: string[], sent: string[]
   const known = new Set(
     ((await InboundEmailModel.find({ gmailId: { $in: all } }, { gmailId: 1 }).lean()) as Array<{ gmailId: string }>).map((d) => d.gmailId),
   );
-  const retry = opts.retry ? ((await InboundEmailModel.find({ status: 'failed', attempts: { $lt: MAX_ATTEMPTS } }, { gmailId: 1 }).lean()) as Array<{ gmailId: string }>).map((d) => d.gmailId) : [];
+  const retry = opts.retry ? ((await InboundEmailModel.find({ status: 'failed', attempts: { $lt: MAX_ATTEMPTS }, gmailId: { $not: /^enquiry:/ } }, { gmailId: 1 }).lean()) as Array<{ gmailId: string }>).map((d) => d.gmailId) : [];
   const sentSet = new Set(sent);
   // Oldest first, so a conversation's mails are handled in the order they were written.
   const todo = [...new Set([...all.filter((id) => !known.has(id)), ...retry])];

@@ -49,6 +49,8 @@ const filterQuerySchema = z.object({
    * owner" is the question a salesperson actually asks.
    */
   brands: csvList,
+  /** Only people with a new grant spotted in the last 60 days (services/funding/fundingAlerts.ts). */
+  newFunding: z.enum(['1', 'true']).optional(),
   sortBy: z.enum(['createdAt', 'score', 'name']).default('createdAt'),
   sortDir: z.enum(['asc', 'desc']).default('desc'),
 });
@@ -78,6 +80,7 @@ function buildLeadQuery(q: FilterQuery): Omit<Query, 'options'> {
     // array-contains-any at migration time.
     filter.push(where.in('research.instruments.brandKey', q.brands));
   }
+  if (q.newFunding) filter.push(where.gte('fundingAlertAt', new Date(Date.now() - 60 * 86_400_000)));
 
   return {
     filter,

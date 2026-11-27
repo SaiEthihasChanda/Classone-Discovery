@@ -4,8 +4,9 @@ import { Tabs } from '../../components/ui';
 import { CatalogPage } from '../catalog/CatalogPage';
 import { SettingsPage } from '../settings/SettingsPage';
 import { UsersPage } from '../users/UsersPage';
+import { ActivityLogPage } from './ActivityLogPage';
 
-type AdminTab = 'catalog' | 'settings' | 'users';
+type AdminTab = 'catalog' | 'settings' | 'users' | 'activity';
 
 /** Admin — product catalog (everyone can read it), settings and users (admins only). */
 export function AdminPage() {
@@ -20,7 +21,7 @@ export function AdminPage() {
       <div className="page-header">
         <div>
           <h1>Admin</h1>
-          <p>Products the AI matches against, how discovery behaves, and who can sign in.</p>
+          <p>Products the AI matches against, how discovery behaves, who can sign in, and who did what.</p>
         </div>
       </div>
       <Tabs
@@ -30,6 +31,7 @@ export function AdminPage() {
             ? ([
                 { key: 'settings', label: 'Settings' },
                 { key: 'users', label: 'Users' },
+                { key: 'activity', label: 'Activity' },
               ] as const)
             : []),
         ]}
@@ -40,6 +42,7 @@ export function AdminPage() {
         {tab === 'catalog' && <CatalogPage />}
         {tab === 'settings' && <SettingsPage />}
         {tab === 'users' && <UsersPage />}
+        {tab === 'activity' && <ActivityLogPage />}
       </div>
     </>
   );

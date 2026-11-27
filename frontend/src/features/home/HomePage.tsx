@@ -65,6 +65,7 @@ export function HomePage() {
         </div>
         <div className="dash-controls">
           <Segmented label="Period" items={RANGES.map((r) => ({ key: r.value, label: r.label }))} value={range} onChange={setRange} />
+          <SummaryButton />
           <button className="btn btn-sm btn-ghost" onClick={reload} disabled={loading}>
             Refresh
           </button>
@@ -184,6 +185,28 @@ function Tiles({ d, range }: { d: DashboardData; range: DashboardRange }) {
         );
       })}
     </div>
+  );
+}
+
+/** Emails last week's summary to the team now (it also goes out every Monday at 09:00 IST). */
+function SummaryButton() {
+  const { can } = useAuth();
+  const [state, setState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  if (!can('sales')) return null;
+  const send = async () => {
+    setState('sending');
+    try {
+      await api.sendWeeklySummary();
+      setState('sent');
+    } catch {
+      setState('failed');
+    }
+    setTimeout(() => setState('idle'), 4000);
+  };
+  return (
+    <button className="btn btn-sm btn-ghost" onClick={() => void send()} disabled={state === 'sending'} title="Last week's numbers, emailed to the team — it also goes out every Monday at 09:00">
+      {state === 'sending' ? 'Sending…' : state === 'sent' ? 'Summary sent ✓' : state === 'failed' ? 'Could not send' : 'Email weekly summary'}
+    </button>
   );
 }
 
@@ -417,6 +440,42 @@ function roundTop(x: number, y: number, w: number, h: number, r: number): string
 
 const CAMPAIGN_STATUS: Record<string, string> = { draft: 'Draft', scheduled: 'Scheduled', sending: 'Sending', paused: 'Paused', done: 'Sent', cancelled: 'Cancelled' };
 
+/** Campaign emails in the period, step by step to a booked demo. */
+function Engagement({ e }: { e: NonNullable<DashboardData['outreach']['engagement']> }) {
+  const steps = [
+    { label: 'Campaign emails', n: e.emailed },
+    { label: 'Opened', n: e.opened, hint: 'An estimate: some mail apps block images, others load them for privacy.' },
+    { label: 'Clicked a link', n: e.clicked },
+    { label: 'Opened the booking page', n: e.clickedBooking },
+    { label: 'Then booked', n: e.bookedAfterClick },
+  ];
+  return (
+    <div className="dash-engage">
+      <h3 className="dash-h3">From email to booked demo</h3>
+      <div className="results-funnel">
+        {steps.map((s, i) => (
+          <div key={s.label} title={s.hint}>
+            <strong>
+              <CountUp text={String(s.n)} />
+            </strong>
+            <span>{s.label}</span>
+            {i > 0 && <small>{e.emailed ? Math.round((s.n / e.emailed) * 100) : 0}%</small>}
+            <i style={{ width: `${e.emailed ? Math.max(s.n ? 4 : 0, (s.n / e.emailed) * 100) : 0}%`, animationDelay: `${i * 80}ms` }} />
+          </div>
+        ))}
+      </div>
+      <p className="muted small" style={{ margin: '6px 0 0' }}>
+        {e.clickedNotBooked > 0 && (
+          <>
+            <strong>{e.clickedNotBooked}</strong> opened the booking page but did not book — open the campaign to follow up. ·{' '}
+          </>
+        )}
+        {e.bookings} demo{e.bookings === 1 ? '' : 's'} booked on the booking page in this period, from any source.
+      </p>
+    </div>
+  );
+}
+
 function Outreach({ o }: { o: DashboardData['outreach'] }) {
   const sentTotal = o.sends.manual + o.sends.ai + o.sends.automatic + o.sends.campaign;
   const stats = [
@@ -438,6 +497,7 @@ function Outreach({ o }: { o: DashboardData['outreach'] }) {
           </div>
         ))}
       </div>
+      {o.engagement && o.engagement.emailed > 0 && <Engagement e={o.engagement} />}
       <div className="dash-two inner">
         <div>
           <h3 className="dash-h3">Campaigns</h3>
@@ -450,6 +510,8 @@ function Outreach({ o }: { o: DashboardData['outreach'] }) {
                   <tr>
                     <th>Campaign</th>
                     <th className="num">Sent</th>
+                    <th className="num" title="Opened at least once — an estimate">Opened</th>
+                    <th className="num">Clicked</th>
                     <th className="num">Replied</th>
                     <th className="num">Unsubscribed</th>
                     <th className="num">Reply rate</th>
@@ -466,6 +528,8 @@ function Outreach({ o }: { o: DashboardData['outreach'] }) {
                         </div>
                       </td>
                       <td className="num">{c.sent}</td>
+                      <td className="num">{c.opened ?? 0}</td>
+                      <td className="num">{c.clicked ?? 0}</td>
                       <td className="num">{c.replied}</td>
                       <td className="num">{c.unsubscribed}</td>
                       <td className="num">{fmtPct(c.replyRate)}</td>

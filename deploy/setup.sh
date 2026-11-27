@@ -123,7 +123,9 @@ fi
 AUTH_BLOCK=""
 if [[ -n "${BASIC_AUTH_USER:-}" && -n "${BASIC_AUTH_PASSWORD:-}" ]]; then
   HASH=$(caddy hash-password --plaintext "$BASIC_AUTH_PASSWORD")
-  AUTH_BLOCK="basic_auth {
+  # Links that people outside the team open (campaign tracking, "Review & send", demo booking) skip the password.
+  AUTH_BLOCK="@private not path /api/public/* /act/* /book/*
+	basic_auth @private {
 		$BASIC_AUTH_USER $HASH
 	}"
 fi

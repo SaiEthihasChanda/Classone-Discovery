@@ -18,7 +18,7 @@ import { useAuth } from '../../auth/AuthProvider';
 import { ErrorBanner, Loading, ScorePill, StatusBadge, relativeTime, shortInstitute } from '../../components/common';
 import { Icon, Modal, Segmented } from '../../components/ui';
 import { AnimatePresence, cardMotion, motion } from '../../components/motion';
-import type { EmailThread, Person, PersonDetail } from '../../types';
+import type { CheckInSettings, EmailThread, Person, PersonDetail } from '../../types';
 
 type QueueItem = Awaited<ReturnType<typeof api.needsYou>>['items'][number];
 
@@ -96,6 +96,7 @@ export function ConversationsPage() {
               <p>Everyone the sales mailbox is talking to — and who is waiting on you.</p>
             </div>
             <div className="row" style={{ gap: 12 }}>
+              <CheckInSwitch />
               <FollowUpSwitch />
               <button className="btn btn-primary" onClick={() => setComposeTo('')}>
                 <Icon name="plus" size={16} /> New message
@@ -107,6 +108,43 @@ export function ConversationsPage() {
         </>
       )}
       {composeTo !== null && <ComposeModal to={composeTo} onClose={() => setComposeTo(null)} onSent={(email) => (setComposeTo(null), setTick((n) => n + 1), go(email))} />}
+    </div>
+  );
+}
+
+/**
+ * Re-engagement check-ins: once a day the AI drafts a short check-in for people quiet for 90+ days
+ * (approved leads and customers we wrote to before). Drafts only — they wait in Needs you.
+ */
+function CheckInSwitch() {
+  const { can } = useAuth();
+  const [s, setS] = useState<CheckInSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void api.checkInSettings().then(setS).catch(() => {});
+  }, []);
+  if (!s) return null;
+  const change = async (on: 'on' | 'off') => {
+    setBusy(true);
+    try {
+      setS(await api.setCheckInSettings({ enabled: on === 'on' }));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="followup-switch" title={`On: every day the AI drafts a check-in (at most ${s.dailyMax}) for people who have been quiet for ${s.quietDays}+ days. Drafts wait here in Needs you — nothing is sent without approval.`}>
+      <span className="muted small">Check-ins</span>
+      <Segmented
+        label="Check-ins"
+        items={[
+          { key: 'off', label: 'Off' },
+          { key: 'on', label: 'On' },
+        ]}
+        value={s.enabled ? 'on' : 'off'}
+        disabled={busy || !can('sales')}
+        onChange={(v) => void change(v)}
+      />
     </div>
   );
 }
@@ -268,7 +306,7 @@ function QueueCard({ item, onDone, onOpen }: { item: QueueItem; onDone: () => vo
           {item.kind === 'reply' ? (
             <span className={`qstatus ${item.overdue ? 'late' : 'waiting'}`}>{item.overdue ? `Overdue · ${waitedFor(item.waitingSince)}` : `Waiting ${waitedFor(item.waitingSince)}`}</span>
           ) : (
-            <span className="qstatus followup">Follow-up ready</span>
+            <span className="qstatus followup">{item.draft?.type === 'check_in' ? 'Check-in ready' : item.draft?.type === 'grant_note' ? 'New grant — note ready' : 'Follow-up ready'}</span>
           )}
           {item.autoReplyDueAt && <span className="muted small">Holding reply {clock(item.autoReplyDueAt)}</span>}
           {item.autoReplySent && <span className="muted small">Holding reply sent</span>}
@@ -304,7 +342,7 @@ function QueueCard({ item, onDone, onOpen }: { item: QueueItem; onDone: () => vo
         </div>
       ) : item.draft ? (
         <div className="queue-draft">
-          <div className="queue-draft-label">✦ AI draft {item.kind === 'followup' ? '— follow-up' : '— reply'}</div>
+          <div className="queue-draft-label">✦ AI draft {item.draft?.type === 'check_in' ? '— check-in' : item.draft?.type === 'grant_note' ? '— congratulations on a new grant' : item.kind === 'followup' ? '— follow-up' : '— reply'}</div>
           <div className="queue-draft-body">{item.draft.body}</div>
         </div>
       ) : (
@@ -339,7 +377,7 @@ function QueueCard({ item, onDone, onOpen }: { item: QueueItem; onDone: () => vo
             </button>
           ) : (
             <button className="btn btn-ghost" disabled={busy !== null} onClick={() => void run('skip', () => api.discardWaitingDraft(item.threadId))}>
-              Don't follow up
+              {item.draft?.type === 'check_in' ? "Don't check in" : item.draft?.type === 'grant_note' ? "Don't send" : "Don't follow up"}
             </button>
           )}
           <button className="btn btn-ghost" onClick={onOpen}>
@@ -675,7 +713,7 @@ function TopicSection({ thread: t, person, onChanged }: { thread: EmailThread; p
 
       {hasDraft && !open && (
         <div className="queue-draft" style={{ margin: '10px 0 0' }}>
-          <div className="queue-draft-label">✦ AI draft {t.draftType === 'response' ? '— reply' : t.draftType?.startsWith('follow_up') ? '— follow-up' : ''}</div>
+          <div className="queue-draft-label">✦ AI draft {t.draftType === 'response' ? '— reply' : t.draftType?.startsWith('follow_up') ? '— follow-up' : t.draftType === 'check_in' ? '— check-in' : t.draftType === 'grant_note' ? '— new grant' : ''}</div>
           <div className="queue-draft-body">{t.draftBody}</div>
           {can('sales') && (
             <div className="row" style={{ gap: 8, marginTop: 10 }}>

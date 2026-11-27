@@ -5,7 +5,7 @@
  * feature gets consistent error messages instead of each fetch call inventing
  * its own handling.
  */
-import type { MailboxImport,
+import type { CampaignResults, BookingSettings, EventInput, FieldPerson, PublicBooking, ScheduleEvent, ActivityLogEntry, CheckInSettings, MailboxImport,
   AudiencePreview,
   Campaign,
   CampaignAudience,
@@ -153,6 +153,8 @@ export interface LeadListParams {
   minScore?: number;
   /** Instrument brand keys; matches leads using ANY of them. */
   brands?: string[];
+  /** Only people with a new grant in the last 60 days. */
+  newFunding?: '1';
   limit?: number;
   skip?: number;
   sortBy?: 'createdAt' | 'score' | 'name';
@@ -210,6 +212,26 @@ export interface CreateLeadPayload {
 export const api = {
   health: () => request<{ status: string; dependencies: Record<string, string> }>('/health'),
 
+  activityLog: (q: { text?: string; actor?: string; kind?: 'people' | 'system'; from?: string; to?: string; before?: string; limit?: number }) => {
+    const params = new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]));
+    return request<{ items: ActivityLogEntry[]; actors?: Array<{ actor: string; actorName?: string }> }>(`/admin/activity?${params}`);
+  },
+  // Schedules
+  scheduleEvents: (q: { from: string; to: string; assignee?: string; leadId?: string }) =>
+    request<{ events: ScheduleEvent[] }>(`/schedules/events?${new URLSearchParams(Object.entries(q).filter(([, v]) => v) as Array<[string, string]>)}`),
+  createEvent: (e: EventInput) => request<ScheduleEvent>('/schedules/events', { method: 'POST', body: JSON.stringify(e) }),
+  updateEvent: (id: string, e: EventInput) => request<ScheduleEvent>(`/schedules/events/${id}`, { method: 'PUT', body: JSON.stringify(e) }),
+  deleteEvent: (id: string) => request<void>(`/schedules/events/${id}`, { method: 'DELETE' }),
+  fieldStep: (id: string, step: 'on-the-way' | 'check-in' | 'check-out', p: { lat?: number; lng?: number; accuracy?: number; note?: string }) =>
+    request<ScheduleEvent>(`/schedules/events/${id}/${step}`, { method: 'POST', body: JSON.stringify(p) }),
+  fieldBoard: (date?: string) => request<{ people: FieldPerson[] }>(`/schedules/board${date ? `?date=${date}` : ''}`),
+  schedulePeople: () => request<{ people: Array<{ email: string; name: string; role: string }> }>('/schedules/people'),
+  bookingSettings: () => request<{ settings: BookingSettings; slots: number }>('/schedules/booking'),
+  setBookingSettings: (patch: Partial<BookingSettings>) => request<BookingSettings>('/schedules/booking', { method: 'PUT', body: JSON.stringify(patch) }),
+  publicBooking: () => request<PublicBooking>('/public/booking'),
+  book: (b: { start: string; name: string; email: string; institution?: string; phone?: string; message?: string; website?: string }) =>
+    request<{ ok: true; start?: string; end?: string; mode?: string }>('/public/booking', { method: 'POST', body: JSON.stringify(b) }),
+  sendWeeklySummary: () => request<{ sent: boolean }>('/dashboard/weekly-summary', { method: 'POST' }),
   dashboard: (range: DashboardRange = '30') => request<DashboardData>(`/dashboard?range=${range}`),
 
   listLeads: (params: LeadListParams = {}) =>
@@ -394,6 +416,8 @@ export const api = {
     request<Campaign>(`/campaigns/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
   deleteCampaign: (id: string) => request<{ ok: true }>(`/campaigns/${id}`, { method: 'DELETE' }),
   duplicateCampaign: (id: string) => request<Campaign>(`/campaigns/${id}/duplicate`, { method: 'POST' }),
+  campaignResults: (id: string) => request<CampaignResults>(`/campaigns/${id}/results`),
+  nudgeNonBookers: (id: string) => request<{ drafted: number }>(`/campaigns/${id}/nudge-non-bookers`, { method: 'POST' }),
   campaignRecipients: (id: string) => request<{ items: CampaignRecipient[] }>(`/campaigns/${id}/recipients`),
   campaignAudienceOptions: () => request<{ institutes: string[]; applicationAreas: string[]; tags: string[]; products: Array<{ id: string; name: string }> }>('/campaigns/audience/options'),
   campaignAudiencePreview: (audience: CampaignAudience, campaignId?: string) =>
@@ -433,6 +457,8 @@ export const api = {
   setDoNotContact: (email: string, value: boolean) =>
     request<{ ok: true }>(`/conversations/people/${encodeURIComponent(email)}/do-not-contact`, { method: 'PUT', body: JSON.stringify({ value }) }),
   conversationSettings: () => request<{ followUpMode: 'auto' | 'manual' }>('/conversations/settings'),
+  checkInSettings: () => request<CheckInSettings>('/conversations/check-ins'),
+  setCheckInSettings: (patch: Partial<CheckInSettings>) => request<CheckInSettings>('/conversations/check-ins', { method: 'PUT', body: JSON.stringify(patch) }),
   setFollowUpMode: (followUpMode: 'auto' | 'manual') => request<{ followUpMode: 'auto' | 'manual' }>('/conversations/settings', { method: 'PUT', body: JSON.stringify({ followUpMode }) }),
   setPersonFollowUpMode: (email: string, value: 'auto' | 'manual' | null) =>
     request<{ ok: true }>(`/conversations/people/${encodeURIComponent(email)}/follow-up-mode`, { method: 'PUT', body: JSON.stringify({ value }) }),

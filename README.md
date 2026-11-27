@@ -1,4 +1,4 @@
-# Class One Systems — AI Sales Automation Platform
+# ClassOne Discovery — AI sales platform for Class One Systems
 
 Discovers research-sector leads from public sources, scores and qualifies them with AI, keeps
 them in one CRM, drafts personalised outreach referencing each researcher's own published work,

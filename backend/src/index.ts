@@ -16,6 +16,11 @@ import { startInboxPoller, stopInboxPoller } from './services/email/inboxPoller.
 import { startCampaignSender, stopCampaignSender } from './services/campaigns/campaignService.js';
 import { startReplyWatch, stopReplyWatch } from './services/email/replyWatch.js';
 import { startCatalogWatcher, stopCatalogWatcher } from './services/catalog/catalogWatcher.js';
+import { startEnquiryWatcher, stopEnquiryWatcher } from './services/enquiries/enquiryWatcher.js';
+import { startWeeklySummary, stopWeeklySummary } from './services/reports/weeklySummary.js';
+import { startReengage, stopReengage } from './services/email/reengage.js';
+import { startScheduleJobs, stopScheduleJobs } from './services/schedules/scheduleService.js';
+import { startFundingAlerts, stopFundingAlerts } from './services/funding/fundingAlerts.js';
 import { getAiProvider } from './services/ai/enrichmentService.js';
 
 async function main(): Promise<void> {
@@ -40,6 +45,16 @@ async function main(): Promise<void> {
   startReplyWatch();
   // New products on classonesystems.in → CRM catalog, discovery keywords, launch campaigns.
   startCatalogWatcher();
+  // Enquiry form submissions on classonesystems.in → Conversations (a reply drafted for approval).
+  startEnquiryWatcher();
+  // Monday 09:00 IST: last week's numbers emailed to the team.
+  startWeeklySummary();
+  // Daily from 10:00 IST: check-ins drafted (for approval) for people who went quiet.
+  startReengage();
+  // 07:30 IST: each sales executive gets the day's visits.
+  startScheduleJobs();
+  // Sundays: new grants spotted on leads' papers → congratulations notes drafted for approval.
+  startFundingAlerts();
   // The Prospects conveyor and its scheduled runs. Off with FLOW_ENGINE=off (e.g. a second instance).
   if (process.env.FLOW_ENGINE !== 'off') {
     await startFlowEngine();
@@ -54,6 +69,11 @@ async function main(): Promise<void> {
     stopCampaignSender();
     stopReplyWatch();
     stopCatalogWatcher();
+    stopEnquiryWatcher();
+    stopWeeklySummary();
+    stopReengage();
+    stopScheduleJobs();
+    stopFundingAlerts();
     stopFlowEngine();
     stopScheduleTicker();
     stopRunNotifier();

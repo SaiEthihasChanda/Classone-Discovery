@@ -106,7 +106,7 @@ export async function runFollowUpCheck(now = new Date()): Promise<{ drafted: num
   return out;
 }
 
-async function notifyAutoFollowUp(thread: EmailThread, name: string, email: string, draft: { subject: string; body: string; number: number }): Promise<void> {
+export async function notifyAutoFollowUp(thread: EmailThread, name: string, email: string, draft: { subject: string; body: string; number: number }): Promise<void> {
   const left = Math.max(0, thread.followUp.maxAttempts - thread.followUp.attemptsSent);
   const html = shell(
     `Follow-up ${draft.number} sent to ${name}`,

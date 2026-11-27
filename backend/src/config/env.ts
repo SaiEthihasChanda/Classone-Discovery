@@ -84,6 +84,8 @@ const envSchema = z.object({
 
   EMAIL_PROVIDER: z.enum(['ethereal', 'gmail']).default('ethereal'),
   EMAIL_FROM_NAME: z.string().default('Class One Systems'),
+  /** How often website enquiries (classonesystems.in form) are read into Conversations. 0 = off. */
+  ENQUIRY_POLL_SECONDS: z.coerce.number().int().min(0).default(120),
   EMAIL_FROM_ADDRESS: z.string().default('sales@classone-systems.example'),
 
   // Gmail send (EMAIL_PROVIDER=gmail only). GMAIL_REFRESH_TOKEN is obtained by

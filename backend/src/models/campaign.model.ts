@@ -67,6 +67,14 @@ const recipientSchema = new Schema(
     sentAt: { type: Date, index: true },
     threadId: String,
     error: String,
+    // Engagement (services/campaigns/tracking.ts): first open / click, counts, and the links clicked.
+    openedAt: Date,
+    opens: Number,
+    clickedAt: Date,
+    clicks: Number,
+    clickLog: { type: [{ url: String, at: Date, _id: false }], default: undefined },
+    /** When a "didn't book" follow-up was drafted for them (services/campaigns/campaignResults.ts). */
+    nudgedAt: Date,
   },
   { collection: 'campaign_recipients', timestamps: true, versionKey: false },
 );
